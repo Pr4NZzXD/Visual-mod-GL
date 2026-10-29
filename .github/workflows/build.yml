@@ -10,11 +10,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Get Dear ImGui and Dobby
+      - name: Get Dear ImGui and And64InlineHook
         run: |
           mkdir -p external
           git clone --depth 1 --branch v1.91.5 https://github.com/ocornut/imgui external/imgui
-          git clone --depth 1 https://github.com/jmpews/Dobby external/Dobby
+          git clone --depth 1 https://github.com/Rprop/And64InlineHook external/And64InlineHook
+          ls external/And64InlineHook
 
       - name: Build libvisualmobile.so
         run: |
@@ -32,4 +33,3 @@ jobs:
         with:
           name: libvisualmobile
           path: build/libvisualmobile.so
-          
