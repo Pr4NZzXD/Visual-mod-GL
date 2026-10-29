@@ -147,6 +147,24 @@ void* bootstrap(void*) {
         return nullptr;
     }
 
+    // libil2cpp.so is mapped long before the game calls il2cpp_init(). il2cpp_domain_get() builds the domain
+    // object from il2cpp_defaults, which are still empty until then, so calling it too early crashes the game.
+    // il2cpp_get_corlib() only reads a global, so it is safe to poll: it stays null until the runtime is up.
+    using GetCorlibFn = void* (*)();
+    GetCorlibFn getCorlib = reinterpret_cast<GetCorlibFn>(dlsym(h, "il2cpp_get_corlib"));
+    if (getCorlib) {
+        for (int i = 0; i < 6000 && !getCorlib(); i++) usleep(50 * 1000);
+        if (!getCorlib()) {
+            logf("il2cpp runtime never initialised, giving up");
+            return nullptr;
+        }
+        logf("il2cpp runtime initialised");
+        usleep(1500 * 1000);  // let il2cpp_init() finish setting up before touching the domain
+    } else {
+        logf("il2cpp_get_corlib not found, waiting 15 s before touching il2cpp");
+        sleep(15);
+    }
+
     bool attached = false;
     bool ready = false;
     for (int i = 0; i < 3000 && !ready; i++) {
