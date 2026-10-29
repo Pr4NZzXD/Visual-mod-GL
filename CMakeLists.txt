@@ -1,15 +1,16 @@
 cmake_minimum_required(VERSION 3.22)
-project(visualmobile LANGUAGES C CXX ASM)
+project(visualmobile LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-# Dobby (inline hooks), built as a static library
-set(DOBBY_GENERATE_SHARED OFF CACHE BOOL "" FORCE)
-set(DOBBY_DEBUG OFF CACHE BOOL "" FORCE)
-set(Plugin.SymbolResolver OFF CACHE BOOL "" FORCE)
-add_subdirectory(external/Dobby EXCLUDE_FROM_ALL)
+# And64InlineHook (arm64 inline hooks): two plain source files, compiled straight into the library
+set(HOOK_DIR ${CMAKE_SOURCE_DIR}/external/And64InlineHook)
+if(NOT EXISTS ${HOOK_DIR}/And64InlineHook.cpp OR NOT EXISTS ${HOOK_DIR}/And64InlineHook.hpp)
+    message(FATAL_ERROR "And64InlineHook.cpp/.hpp not found in ${HOOK_DIR}")
+endif()
+set_source_files_properties(${HOOK_DIR}/And64InlineHook.cpp PROPERTIES COMPILE_FLAGS "-w")
 
 # Dear ImGui, compiled straight into the library
 set(IMGUI_DIR ${CMAKE_SOURCE_DIR}/external/imgui)
@@ -26,13 +27,14 @@ add_library(visualmobile SHARED
     ${IMGUI_DIR}/imgui_tables.cpp
     ${IMGUI_DIR}/imgui_widgets.cpp
     ${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp
+    ${HOOK_DIR}/And64InlineHook.cpp
 )
 
 target_include_directories(visualmobile PRIVATE
     src
     ${IMGUI_DIR}
     ${IMGUI_DIR}/backends
-    ${CMAKE_SOURCE_DIR}/external/Dobby/include
+    ${HOOK_DIR}
 )
 
 target_compile_definitions(visualmobile PRIVATE
@@ -43,4 +45,4 @@ target_compile_definitions(visualmobile PRIVATE
 
 target_compile_options(visualmobile PRIVATE -O2 -fvisibility=hidden -Wno-unused-parameter)
 target_link_options(visualmobile PRIVATE -Wl,--gc-sections -s)
-target_link_libraries(visualmobile PRIVATE dobby log android EGL GLESv3 dl)
+target_link_libraries(visualmobile PRIVATE log android EGL GLESv3 dl)
