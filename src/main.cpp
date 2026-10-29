@@ -9,7 +9,7 @@
 #include <chrono>
 #include <cstring>
 
-#include "dobby.h"
+#include "And64InlineHook.hpp"
 #include "effects.h"
 #include "il2cpp.h"
 #include "log.h"
@@ -20,24 +20,18 @@ using namespace vm;
 
 namespace {
 
-// ---------------------------------------------------------------- hooking helper (works with either Dobby signature)
-template <typename T>
-struct DobbyArgs;
-template <typename R, typename A1, typename A2, typename A3>
-struct DobbyArgs<R (*)(A1, A2, A3)> {
-    using P2 = A2;
-    using P3 = A3;
-};
-
+// ---------------------------------------------------------------- hooking helper (And64InlineHook, arm64)
 bool installHook(void* target, void* replacement, void** original, const char* what) {
     if (!target) {
         logf("hook %s: address not found", what);
         return false;
     }
-    using D = DobbyArgs<decltype(&DobbyHook)>;
-    int r = DobbyHook(target, (D::P2)replacement, (D::P3)original);
-    logf("hook %s: %s", what, r == 0 ? "ok" : "FAILED");
-    return r == 0;
+    if (original) *original = nullptr;
+    A64HookFunction(target, replacement, original);
+    // A64HookFunction returns nothing; when it fails the trampoline pointer stays null
+    bool ok = !original || *original != nullptr;
+    logf("hook %s: %s", what, ok ? "ok" : "FAILED");
+    return ok;
 }
 
 // ---------------------------------------------------------------- the game's main thread
