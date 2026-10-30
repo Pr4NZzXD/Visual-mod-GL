@@ -5,6 +5,7 @@
 #include <cstring>
 #include <mutex>
 #include <string>
+#include <vector>
 
 #include "log.h"
 
@@ -13,6 +14,7 @@ namespace vm {
 static std::mutex gMutex;
 static FxSettings gFx;
 static unsigned gFxVersion = 1;
+static MainStatus gStatus;
 static Touch gTouch;
 
 std::atomic<bool> gBlockTouch{false};
@@ -36,6 +38,30 @@ FxSettings currentFx() {
     return gFx;
 }
 
+void setVisualStatus(const std::string& s) {
+    std::lock_guard<std::mutex> l(gMutex);
+    gStatus.visual = s;
+}
+
+void setPerfStatus(const std::string& perf, const std::string& resolution, int screenW, int screenH) {
+    std::lock_guard<std::mutex> l(gMutex);
+    gStatus.perf = perf;
+    gStatus.resolution = resolution;
+    gStatus.screenW = screenW;
+    gStatus.screenH = screenH;
+}
+
+MainStatus currentStatus() {
+    std::lock_guard<std::mutex> l(gMutex);
+    return gStatus;
+}
+
+void postToast(const char* text) {
+    std::lock_guard<std::mutex> l(gMutex);
+    gStatus.toast = text ? text : "";
+    gStatus.toastSeq++;
+}
+
 void setTouch(const Touch& t) {
     std::lock_guard<std::mutex> l(gMutex);
     gTouch = t;
@@ -47,6 +73,7 @@ Touch getTouch() {
 }
 
 // ---------------------------------------------------------------- settings file (key=value lines)
+// The keys are the ones of the C# mod, so the two versions read each other's settings.
 
 static std::string path() {
     const char* d = dataDir();
@@ -54,52 +81,163 @@ static std::string path() {
     return std::string(d) + "/visualmobile.cfg";
 }
 
-static bool pb(const char* v) { return v[0] == '1'; }
-static float pf(const char* v, float lo, float hi, float fb) {
+namespace {
+
+enum Kind { kBool, kFloat, kInt, kHex };
+
+struct Field {
+    const char* key;
+    Kind kind;
+    void* p;
+    float lo, hi;
+};
+
+float clampf(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); }
+
+bool parseHex(const char* v, float* rgb) {
+    if (*v == '#') v++;
+    if (strlen(v) != 6) return false;
     char* end = nullptr;
-    float f = strtof(v, &end);
-    if (end == v) return fb;
-    return f < lo ? lo : (f > hi ? hi : f);
+    long n = strtol(v, &end, 16);
+    if (end == v || *end) return false;
+    rgb[0] = ((n >> 16) & 255) / 255.f;
+    rgb[1] = ((n >> 8) & 255) / 255.f;
+    rgb[2] = (n & 255) / 255.f;
+    return true;
 }
 
-void settingsLoad(UiSettings& ui) {
-    FxSettings fx;
+void applyField(const Field& f, const char* v) {
+    switch (f.kind) {
+        case kBool:
+            *static_cast<bool*>(f.p) = (v[0] == '1' || !strcasecmp(v, "true"));
+            break;
+        case kFloat: {
+            char* end = nullptr;
+            float x = strtof(v, &end);
+            if (end != v) *static_cast<float*>(f.p) = clampf(x, f.lo, f.hi);
+            break;
+        }
+        case kInt: {
+            char* end = nullptr;
+            long x = strtol(v, &end, 10);
+            if (end != v) *static_cast<int*>(f.p) = static_cast<int>(clampf((float)x, f.lo, f.hi));
+            break;
+        }
+        case kHex:
+            parseHex(v, static_cast<float*>(f.p));
+            break;
+    }
+}
+
+void writeField(FILE* o, const Field& f) {
+    switch (f.kind) {
+        case kBool: fprintf(o, "%s=%d\n", f.key, *static_cast<bool*>(f.p) ? 1 : 0); break;
+        case kFloat: fprintf(o, "%s=%.3f\n", f.key, *static_cast<float*>(f.p)); break;
+        case kInt: fprintf(o, "%s=%d\n", f.key, *static_cast<int*>(f.p)); break;
+        case kHex: {
+            float* c = static_cast<float*>(f.p);
+            auto b = [](float x) { return (int)(clampf(x, 0.f, 1.f) * 255.f + 0.5f); };
+            fprintf(o, "%s=#%02X%02X%02X\n", f.key, b(c[0]), b(c[1]), b(c[2]));
+            break;
+        }
+    }
+}
+
+void fields(UiSettings& ui, FxSettings& fx, std::vector<Field>& out) {
+#define FB(key, v) out.push_back({key, kBool, &(v), 0.f, 0.f})
+#define FF(key, v, lo, hi) out.push_back({key, kFloat, &(v), lo, hi})
+#define FI(key, v, lo, hi) out.push_back({key, kInt, &(v), lo, hi})
+    // ---- menu
+    FF("scale", ui.scale, 0.6f, 1.8f);
+    FF("panelAlpha", ui.panelAlpha, 0.3f, 1.f);
+    FF("iconSize", ui.iconSize, 0.6f, 2.f);
+    FF("iconAlpha", ui.iconAlpha, 0.2f, 1.f);
+    FB("rainbow", ui.rainbow);
+    FF("rainbowSpeed", ui.rainbowSpeed, 0.1f, 3.f);
+    FB("rounded", ui.rounded);
+    FB("lock", ui.lock);
+    out.push_back({"accent", kHex, ui.accent, 0.f, 0.f});
+    out.push_back({"bg", kHex, ui.bg, 0.f, 0.f});
+    FB("open", ui.open);
+    FI("tab", ui.tab, 0, 5);
+    FI("colorSub", ui.colorSub, 0, 3);
+    FB("showFps", ui.showFps);
+    FF("fpsX", ui.fpsX, -1.f, 20000.f);
+    FF("fpsY", ui.fpsY, -1.f, 20000.f);
+    FF("eyeX", ui.eyeX, -1.f, 20000.f);
+    FF("eyeY", ui.eyeY, -1.f, 20000.f);
+    FF("panX", ui.panX, -1.f, 20000.f);
+    FF("panY", ui.panY, -1.f, 20000.f);
+    // ---- screen effects
+    FB("visOn", fx.on);
+    FB("visExpOn", fx.exposureOn);     FF("visExp", fx.exposure, -5.f, 5.f);
+    FB("visSatOn", fx.satOn);          FF("visSat", fx.saturation, -100.f, 100.f);
+    FB("visConOn", fx.contrastOn);     FF("visCon", fx.contrast, -100.f, 100.f);
+    FB("visHueOn", fx.hueOn);          FF("visHue", fx.hue, -180.f, 180.f);
+    FB("visWarmOn", fx.warmOn);        FF("visTemp", fx.temperature, -100.f, 100.f);
+                                       FF("visTint", fx.tint, -100.f, 100.f);
+    FB("visFilOn", fx.filterOn);       FF("visFR", fx.fr, 0.f, 1.f);
+    FF("visFG", fx.fg, 0.f, 1.f);      FF("visFB", fx.fb, 0.f, 1.f);
+    FF("visFilStr", fx.filterStrength, 0.f, 1.f);
+    FB("visBlurOn", fx.blurOn);        FF("visBlur", fx.blurStrength, 0.f, 360.f);
+    FI("visBlurN", fx.blurSamples, 4, 32);
+    FB("visGamOn", fx.gammaOn);        FF("visGam", fx.gamma, -1.f, 1.f);
+    FB("visBloomOn", fx.bloomOn);      FF("visBloom", fx.bloom, 0.f, 10.f);
+    FF("visBloomTh", fx.bloomThreshold, 0.f, 2.f);
+    FB("visVigOn", fx.vignetteOn);     FF("visVig", fx.vignette, 0.f, 1.f);
+    FF("visVigSm", fx.vignetteSmooth, 0.05f, 1.f);
+    FB("visGrainOn", fx.grainOn);      FF("visGrain", fx.grain, 0.f, 1.f);
+    FF("visGrainSz", fx.grainSize, 0.3f, 3.f);
+    FB("visChrOn", fx.chromaOn);       FF("visChr", fx.chroma, 0.f, 1.f);
+    FB("visLensOn", fx.lensOn);        FF("visLens", fx.lens, -100.f, 100.f);
+    // ---- fog
+    FI("fogMode", fx.fogMode, 0, 2);
+    FF("fogR", fx.fogR, 0.f, 1.f);
+    FF("fogG", fx.fogG, 0.f, 1.f);
+    FF("fogB", fx.fogB, 0.f, 1.f);
+    FF("fogThick", fx.fogThick, 0.f, 100.f);
+    // ---- performance
+    FI("perfLevel", fx.perfLevel, 0, 2);
+    FB("perfNoTex", fx.noTextures);
+    FB("perfParticles", fx.hideParticles);
+    FB("perfPostFx", fx.noPostFx);
+    FB("perfLights", fx.noShadow);
+    FB("perfDist", fx.drawDistOn);     FF("perfDistV", fx.drawDist, 20.f, 300.f);
+    FI("perfRes", fx.resIndex, 0, 4);
+    FB("perfCustom", fx.customRes);
+    FI("perfW", fx.customW, 0, 4096);
+    FI("perfH", fx.customH, 0, 4096);
+    FB("perfSquash", fx.squashOn);     FF("perfSquashV", fx.squash, 0.3f, 3.f);
+    FI("perfFps", fx.fpsIndex, 0, 4);
+    FB("perfAuto", fx.autoClean);
+#undef FB
+#undef FF
+#undef FI
+}
+
+}  // namespace
+
+void settingsLoad(UiSettings& ui, FxSettings& fx) {
     std::string p = path();
     FILE* f = p.empty() ? nullptr : fopen(p.c_str(), "r");
     if (f) {
+        std::vector<Field> fl;
+        fields(ui, fx, fl);
         char line[256];
         while (fgets(line, sizeof(line), f)) {
+            if (line[0] == '#') continue;
             char* eq = strchr(line, '=');
             if (!eq) continue;
             *eq = 0;
             const char* k = line;
             char* v = eq + 1;
             v[strcspn(v, "\r\n")] = 0;
-            if (!strcmp(k, "on")) fx.on = pb(v);
-            else if (!strcmp(k, "exposureOn")) fx.exposureOn = pb(v);
-            else if (!strcmp(k, "exposure")) fx.exposure = pf(v, -5.f, 5.f, 0.f);
-            else if (!strcmp(k, "satOn")) fx.satOn = pb(v);
-            else if (!strcmp(k, "saturation")) fx.saturation = pf(v, -100.f, 100.f, 0.f);
-            else if (!strcmp(k, "contrastOn")) fx.contrastOn = pb(v);
-            else if (!strcmp(k, "contrast")) fx.contrast = pf(v, -100.f, 100.f, 0.f);
-            else if (!strcmp(k, "hueOn")) fx.hueOn = pb(v);
-            else if (!strcmp(k, "hue")) fx.hue = pf(v, -180.f, 180.f, 0.f);
-            else if (!strcmp(k, "warmOn")) fx.warmOn = pb(v);
-            else if (!strcmp(k, "temperature")) fx.temperature = pf(v, -100.f, 100.f, 0.f);
-            else if (!strcmp(k, "tint")) fx.tint = pf(v, -100.f, 100.f, 0.f);
-            else if (!strcmp(k, "open")) ui.open = pb(v);
-            else if (!strcmp(k, "tab")) ui.tab = (int)pf(v, 0.f, 2.f, 0.f);
-            else if (!strcmp(k, "showFps")) ui.showFps = pb(v);
-            else if (!strcmp(k, "lock")) ui.lock = pb(v);
-            else if (!strcmp(k, "scale")) ui.scale = pf(v, 0.6f, 1.8f, 1.f);
-            else if (!strcmp(k, "panelAlpha")) ui.panelAlpha = pf(v, 0.3f, 1.f, 0.94f);
-            else if (!strcmp(k, "iconSize")) ui.iconSize = pf(v, 0.6f, 2.f, 1.f);
-            else if (!strcmp(k, "eyeX")) ui.eyeX = pf(v, -1.f, 20000.f, -1.f);
-            else if (!strcmp(k, "eyeY")) ui.eyeY = pf(v, -1.f, 20000.f, -1.f);
-            else if (!strcmp(k, "panX")) ui.panX = pf(v, -1.f, 20000.f, -1.f);
-            else if (!strcmp(k, "panY")) ui.panY = pf(v, -1.f, 20000.f, -1.f);
-            else if (!strcmp(k, "fpsX")) ui.fpsX = pf(v, -1.f, 20000.f, -1.f);
-            else if (!strcmp(k, "fpsY")) ui.fpsY = pf(v, -1.f, 20000.f, -1.f);
+            for (const Field& fd : fl) {
+                if (!strcmp(k, fd.key)) {
+                    applyField(fd, v);
+                    break;
+                }
+            }
         }
         fclose(f);
         logf("settings loaded from %s", p.c_str());
@@ -107,16 +245,17 @@ void settingsLoad(UiSettings& ui) {
     publishFx(fx);
 }
 
-void settingsSave(const UiSettings& ui) {
+void settingsSave(const UiSettings& uiIn, const FxSettings& fxIn) {
     std::string p = path();
     if (p.empty()) return;
-    FxSettings fx = currentFx();
+    UiSettings ui = uiIn;
+    FxSettings fx = fxIn;
     FILE* f = fopen(p.c_str(), "w");
     if (!f) return;
-    fprintf(f, "on=%d\nexposureOn=%d\nexposure=%.3f\nsatOn=%d\nsaturation=%.3f\n", fx.on, fx.exposureOn, fx.exposure, fx.satOn, fx.saturation);
-    fprintf(f, "contrastOn=%d\ncontrast=%.3f\nhueOn=%d\nhue=%.3f\nwarmOn=%d\ntemperature=%.3f\ntint=%.3f\n", fx.contrastOn, fx.contrast, fx.hueOn, fx.hue, fx.warmOn, fx.temperature, fx.tint);
-    fprintf(f, "open=%d\ntab=%d\nshowFps=%d\nlock=%d\nscale=%.3f\npanelAlpha=%.3f\niconSize=%.3f\n", ui.open, ui.tab, ui.showFps, ui.lock, ui.scale, ui.panelAlpha, ui.iconSize);
-    fprintf(f, "eyeX=%.1f\neyeY=%.1f\npanX=%.1f\npanY=%.1f\nfpsX=%.1f\nfpsY=%.1f\n", ui.eyeX, ui.eyeY, ui.panX, ui.panY, ui.fpsX, ui.fpsY);
+    fprintf(f, "# VisualMobile settings - written by the menu. Delete this file to reset.\n");
+    std::vector<Field> fl;
+    fields(ui, fx, fl);
+    for (const Field& fd : fl) writeField(f, fd);
     fclose(f);
 }
 

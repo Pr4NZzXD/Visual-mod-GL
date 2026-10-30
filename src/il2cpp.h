@@ -1,6 +1,7 @@
 #pragma once
 #include <cstddef>
 #include <cstdint>
+#include <string>
 
 // Only the il2cpp API that is needed. Everything is looked up by name at run time (dlsym), so the mod
 // does not depend on addresses and survives game updates as long as the class and method names stay.
@@ -44,6 +45,14 @@ struct Api {
     uint32_t (*gchandle_new)(Il2CppObject*, int);
     size_t (*array_length)(void*);
     void (*gc_wbarrier_set_field)(Il2CppObject*, void**, void*);  // optional
+    // optional: only used by the performance / fog features
+    const char* (*class_get_name)(Il2CppClass*);
+    Il2CppClass* (*class_get_parent)(Il2CppClass*);
+    const uint16_t* (*string_chars)(Il2CppString*);
+    int32_t (*string_length)(Il2CppString*);
+    void (*gchandle_free)(uint32_t);
+    void (*gc_collect)(int);
+    void* (*resolve_icall)(const char*);
 };
 
 extern Api A;
@@ -63,6 +72,23 @@ Il2CppObject* typeObject(Il2CppClass* k);  // System.Type of a class
 Il2CppClass* classOf(Il2CppObject* o);
 void* unbox(Il2CppObject* o);
 size_t fieldOffset(Il2CppClass* k, const char* name);  // 0 when missing
+
+// ---- helpers used by the fog / performance code
+std::string str(Il2CppString* s);                  // managed string -> UTF-8 ("" for null)
+const char* className(Il2CppObject* o);            // "" when unknown
+bool isA(Il2CppObject* o, const char* name);       // the class, or one of its parents, has this name
+// The engine function behind a managed method (UnityEngine.Class::method). The game strips many managed wrappers,
+// the engine side is still there. nullptr when missing (logged once).
+void* icall(const char* name);
+bool callBool(const MethodInfo* m, void* self, void** args, bool def = false);
+int callInt(const MethodInfo* m, void* self, void** args, int def = 0);
+float callFloat(const MethodInfo* m, void* self, void** args, float def = 0.f);
+uint32_t retain(Il2CppObject* o);                  // strong GC handle: the object stays alive
+void release(uint32_t handle);
+bool alive(Il2CppObject* o);                       // a UnityEngine.Object whose native side still exists
+// UnityEngine.Object.FindObjectsOfType(type): the managed array (nullptr if nothing). Keep it referenced while you use it.
+Il2CppObject* findObjectsOfType(Il2CppClass* k);
+inline Il2CppObject** arrayData(Il2CppObject* arr) { return reinterpret_cast<Il2CppObject**>(reinterpret_cast<char*>(arr) + 0x20); }
 
 template <typename T>
 inline T* fieldPtr(Il2CppObject* o, size_t off) {

@@ -5,68 +5,1022 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
+#include <functional>
+#include <string>
+#include <vector>
 
 #include "imgui.h"
 #include "imgui_impl_opengl3.h"
 #include "log.h"
 #include "shared.h"
 
+// The menu, ported from Ui.cs of the C# mod: a floating eye icon that opens a panel with a tab list on the left
+// and the page of the chosen tab on the right. Everything is drawn by hand (rounded cards, switches, coloured
+// sliders) on ImGui's foreground draw list; the finger is handled here too, with the hit areas the pages register
+// while they are drawn (the next frame matches the finger against those).
+// Runs on the render thread, right before the game presents a frame.
+
 namespace vm {
 namespace {
 
-bool gInit = false;
-bool gFailed = false;
+using Col = ImVec4;
+using Act = std::function<void()>;
+using SetB = std::function<void(bool)>;
+using SetF = std::function<void(float)>;
+using Pick = std::function<void(int)>;
+
+// ================================================================ state
+bool gInit = false, gFailed = false;
 UiSettings ui;
 FxSettings fx;
-float gScaleApplied = -1.f;
+MainStatus st;
 std::chrono::steady_clock::time_point gLast;
-bool gLastDown = false;
+float gTime = 0.f;       // seconds since the menu started
+float gFps = 0.f;        // smoothed frames per second
 bool gNeedSave = false;
-float gSaveTimer = 0.f;
+float gSaveAt = -1.f;
+int gPresetSel = -1;     // the preset that was picked last (cleared when a value is changed by hand)
+float gScaleDraft = 1.f;
+std::string gToast;
+float gToastUntil = 0.f;
+int gToastSeq = -1;
 
-const ImVec4 kAccent = ImVec4(0.12f, 0.58f, 1.00f, 1.f);
-const ImVec4 kBg = ImVec4(0.055f, 0.060f, 0.072f, 1.f);
+ImDrawList* D = nullptr;
+ImFont* gFont = nullptr;
 
-void applyStyle(float s) {
-    ImGuiStyle& st = ImGui::GetStyle();
-    st = ImGuiStyle();
-    ImGui::StyleColorsDark();
-    st.ScaleAllSizes(s);
-    st.WindowRounding = 12.f * s;
-    st.ChildRounding = 9.f * s;
-    st.FrameRounding = 8.f * s;
-    st.GrabRounding = 8.f * s;
-    st.PopupRounding = 8.f * s;
-    st.ScrollbarRounding = 8.f * s;
-    st.WindowBorderSize = 1.5f * s;
-    st.ChildBorderSize = 0.f;
-    st.FrameBorderSize = 0.f;
-    st.WindowPadding = ImVec2(10.f * s, 8.f * s);
-    st.FramePadding = ImVec2(10.f * s, 8.f * s);
-    st.ItemSpacing = ImVec2(8.f * s, 8.f * s);
-    st.GrabMinSize = 22.f * s;
-    st.ScrollbarSize = 8.f * s;
-    st.WindowTitleAlign = ImVec2(0.5f, 0.5f);
+// layout, computed every frame from the screen size
+float W = 0, H = 0;
+float S = 1.f, ES = 44.f;
+float fpsW, fpsH, pw, ph, hdrH, ftH, sbW;
+float kx, ky, kw, kBot, cTop, cBot, cx, cw, cy;
+float scroll = 0.f, contentH = 0.f;
 
-    ImVec4* c = st.Colors;
-    ImVec4 card = ImVec4(0.095f, 0.105f, 0.130f, 1.f);
-    c[ImGuiCol_Border] = ImVec4(kAccent.x, kAccent.y, kAccent.z, 0.75f);
-    c[ImGuiCol_TitleBg] = kBg;
-    c[ImGuiCol_TitleBgActive] = kBg;
-    c[ImGuiCol_TitleBgCollapsed] = kBg;
-    c[ImGuiCol_ChildBg] = ImVec4(0.080f, 0.090f, 0.110f, 1.f);
-    c[ImGuiCol_FrameBg] = card;
-    c[ImGuiCol_FrameBgHovered] = card;
-    c[ImGuiCol_FrameBgActive] = card;
-    c[ImGuiCol_CheckMark] = kAccent;
-    c[ImGuiCol_SliderGrab] = ImVec4(1.f, 1.f, 1.f, 1.f);
-    c[ImGuiCol_SliderGrabActive] = kAccent;
-    c[ImGuiCol_Button] = card;
-    c[ImGuiCol_ButtonHovered] = card;
-    c[ImGuiCol_ButtonActive] = kAccent;
-    c[ImGuiCol_ScrollbarGrab] = kAccent;
+const Col White(1.f, 1.f, 1.f, 1.f);
+const Col CBlue(0.30f, 0.55f, 1.00f, 1.f), COrange(1.00f, 0.62f, 0.20f, 1.f), CGreen(0.30f, 0.90f, 0.40f, 1.f);
+const Col CMagenta(0.90f, 0.30f, 0.80f, 1.f), CGrey(0.45f, 0.45f, 0.48f, 1.f), CRed(1.00f, 0.25f, 0.25f, 1.f);
+const Col CDark(0.10f, 0.10f, 0.12f, 1.f);
+
+using Palette = std::vector<std::vector<float>>;
+const Palette kAccents = {{0.12f, 0.58f, 1.00f}, {0.25f, 0.80f, 0.85f}, {0.30f, 0.80f, 0.45f}, {0.65f, 0.85f, 0.30f},
+                          {0.95f, 0.60f, 0.20f}, {0.90f, 0.32f, 0.32f}, {0.98f, 0.15f, 0.62f}, {0.65f, 0.45f, 0.95f}};
+const Palette kBackgrounds = {{0.055f, 0.060f, 0.072f}, {0.06f, 0.09f, 0.17f}, {0.05f, 0.12f, 0.09f},
+                              {0.15f, 0.06f, 0.08f},    {0.11f, 0.07f, 0.16f}, {0.15f, 0.15f, 0.16f}};
+const Palette kFilterPalette = {{1.00f, 1.00f, 1.00f}, {1.00f, 0.35f, 0.35f}, {1.00f, 0.65f, 0.25f},
+                                {1.00f, 0.95f, 0.45f}, {0.45f, 1.00f, 0.50f}, {0.40f, 0.90f, 1.00f},
+                                {0.40f, 0.50f, 1.00f}, {0.75f, 0.45f, 1.00f}, {1.00f, 0.50f, 0.80f}};
+const Palette kFogPalette = {{0.60f, 0.60f, 0.65f}, {1.00f, 1.00f, 1.00f}, {0.00f, 0.00f, 0.00f}, {0.80f, 0.10f, 0.10f},
+                             {0.95f, 0.50f, 0.10f}, {0.10f, 0.60f, 0.20f}, {0.15f, 0.30f, 0.90f}, {0.50f, 0.15f, 0.70f}};
+
+const std::vector<std::string> kTabNames = {"General", "Color", "Effects", "Advanced", "Performance", "Settings"};
+const char* kPageTitles[] = {"GENERAL", "COLOR GRADING", "VISUAL EFFECTS", "ADVANCED", "PERFORMANCE", "MENU SETTINGS"};
+const std::vector<std::string> kColorSub = {"Basic", "Temperature", "Tint", "RGB"};
+const std::vector<std::string> kPresetNames = {"Default", "Warm", "Cold", "Vivid", "Cinematic", "Noir"};
+const std::vector<std::string> kFogModes = {"Game default", "No fog", "Custom"};
+const std::vector<std::string> kLevelNames = {"Off", "Low", "Ultra low"};
+const std::vector<std::string> kResNames = {"100%", "75%", "60%", "50%", "35%"};
+const std::vector<std::string> kFpsNames = {"Game default", "30", "45", "60", "90"};
+
+// ================================================================ colours
+float clampf(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); }
+float lerpf(float a, float b, float t) { return a + (b - a) * t; }
+
+Col shade(Col c, float d) { return Col(clampf(c.x + d, 0, 1), clampf(c.y + d, 0, 1), clampf(c.z + d, 0, 1), c.w); }
+Col withA(Col c, float a) { return Col(c.x, c.y, c.z, a); }
+Col fromP(const std::vector<float>& p) { return Col(p[0], p[1], p[2], 1.f); }
+ImU32 U(const Col& c) { return ImGui::ColorConvertFloat4ToU32(c); }
+
+Col hueRgb(float h) {
+    float r = clampf(std::fabs(h * 6.f - 3.f) - 1.f, 0, 1);
+    float g = clampf(2.f - std::fabs(h * 6.f - 2.f), 0, 1);
+    float b = clampf(2.f - std::fabs(h * 6.f - 4.f), 0, 1);
+    return Col(r, g, b, 1.f);
 }
 
+Col bgCol() { return Col(ui.bg[0], ui.bg[1], ui.bg[2], 1.f); }
+Col accentNow() {
+    if (!ui.rainbow) return Col(ui.accent[0], ui.accent[1], ui.accent[2], 1.f);
+    float x = gTime * ui.rainbowSpeed * 0.25f;
+    return hueRgb(x - std::floor(x));
+}
+Col cardCol() { return shade(bgCol(), 0.08f); }
+
+int indexIn(const Palette& p, float r, float g, float b) {
+    for (size_t i = 0; i < p.size(); i++)
+        if (std::fabs(p[i][0] - r) < 0.006f && std::fabs(p[i][1] - g) < 0.006f && std::fabs(p[i][2] - b) < 0.006f) return (int)i;
+    return -1;
+}
+
+// ================================================================ drawing primitives
+void fill(float x, float y, float w, float h, Col c) {
+    if (c.w <= 0.003f || w <= 0.f || h <= 0.f) return;
+    D->AddRectFilled(ImVec2(x, y), ImVec2(x + w, y + h), U(c));
+}
+
+void rfill(float x, float y, float w, float h, float r, Col c) {
+    if (w < 0.5f || h < 0.5f || c.w <= 0.003f) return;
+    if (!ui.rounded || r < 0.8f) {
+        fill(x, y, w, h, c);
+        return;
+    }
+    r = std::min(r, std::min(w, h) * 0.5f);
+    D->AddRectFilled(ImVec2(x, y), ImVec2(x + w, y + h), U(c), r);
+}
+
+// the ring is drawn inside the rectangle, like the C# version
+void rring(float x, float y, float w, float h, float r, float t, Col c) {
+    if (w < 0.5f || h < 0.5f || c.w <= 0.003f) return;
+    if (!ui.rounded || r < 0.8f) {
+        fill(x, y, w, t, c);
+        fill(x, y + h - t, w, t, c);
+        fill(x, y + t, t, h - 2 * t, c);
+        fill(x + w - t, y + t, t, h - 2 * t, c);
+        return;
+    }
+    r = std::min(r, std::min(w, h) * 0.5f);
+    float hf = t * 0.5f;
+    D->AddRect(ImVec2(x + hf, y + hf), ImVec2(x + w - hf, y + h - hf), U(c), std::max(0.f, r - hf), 0, t);
+}
+
+void disc(float x, float y, float rad, Col c) {
+    if (c.w <= 0.003f) return;
+    if (!ui.rounded && rad > 3.f * S) {  // without rounded corners a small square stands in, like the C# version
+        fill(x - rad, y - rad, 2 * rad, 2 * rad, c);
+        return;
+    }
+    D->AddCircleFilled(ImVec2(x, y), rad, U(c), 32);
+}
+
+void ring(float x, float y, float rad, float t, Col c) {
+    if (c.w <= 0.003f) return;
+    if (!ui.rounded) {
+        rring(x - rad, y - rad, 2 * rad, 2 * rad, 0.f, t, c);
+        return;
+    }
+    D->AddCircle(ImVec2(x, y), rad - t * 0.5f, U(c), 40, t);
+}
+
+void hgrad(float x, float y, float w, float h, Col a, Col b) {
+    D->AddRectFilledMultiColor(ImVec2(x, y), ImVec2(x + w, y + h), U(a), U(b), U(b), U(a));
+}
+
+// ---------------------------------------------------------------- text
+enum Al { Left, Center, Right, UpperLeft };
+
+float fsz(float base, float minSize = 8.f) { return std::max(minSize, std::round(base * S)); }
+
+void text(float x, float y, float w, float h, const std::string& t, float size, Col c, Al al, bool bold = false, bool wrap = false) {
+    if (c.w <= 0.003f || t.empty()) return;
+    ImVec2 ts = gFont->CalcTextSizeA(size, FLT_MAX, wrap ? w : 0.f, t.c_str());
+    float px = x, py = y;
+    if (al == Center) px = x + (w - ts.x) * 0.5f;
+    else if (al == Right) px = x + w - ts.x;
+    if (al == UpperLeft) py = y;
+    else py = y + (h - ts.y) * 0.5f;
+    bool clip = ts.x > w + 0.5f || ts.y > h + 0.5f;
+    if (clip) D->PushClipRect(ImVec2(x, y), ImVec2(x + w, y + h), true);
+    D->AddText(gFont, size, ImVec2(px, py), U(c), t.c_str(), nullptr, wrap ? w : 0.f);
+    if (bold) D->AddText(gFont, size, ImVec2(px + size * 0.04f, py), U(c), t.c_str(), nullptr, wrap ? w : 0.f);
+    if (clip) D->PopClipRect();
+}
+
+Col whiteA(float a) { return Col(1.f, 1.f, 1.f, a); }
+void lbl(float x, float y, float w, float h, const std::string& t, Al al, float alpha = 1.f) {
+    text(x, y, w, h, t, al == Right ? fsz(11.f) : fsz(11.5f), whiteA(alpha), al);
+}
+void small(float x, float y, float w, float h, const std::string& t, Al al, bool bold = false) {
+    text(x, y, w, h, t, fsz(9.f, 7.f), Col(0.55f, 0.60f, 0.68f, 1.f), al, bold);
+}
+
+std::string fmt(float v, const char* f) {
+    int dec = std::max(0, (int)strlen(f) - 2);
+    float eps = 0.5f * std::pow(10.f, -(float)dec);
+    if (std::fabs(v) < eps) v = 0.f;  // no "-0"
+    char b[32];
+    snprintf(b, sizeof(b), "%.*f", dec, v);
+    return b;
+}
+
+// ---------------------------------------------------------------- the eye
+// outline (two arcs that meet at the corners), iris ring and pupil
+void eyeGlyph(float cxp, float cyp, float size, Col c) {
+    float half = size * 0.5f;
+    const int N = 22;
+    ImVec2 top[N], bot[N];
+    for (int i = 0; i < N; i++) {
+        float u = -1.f + 2.f * i / (N - 1);
+        float hl = 0.55f * (1.f - u * u);
+        top[i] = ImVec2(cxp + u * half, cyp - hl * half);
+        bot[i] = ImVec2(cxp + u * half, cyp + hl * half);
+    }
+    float th = std::max(1.f, 0.11f * half);
+    D->AddPolyline(top, N, U(c), 0, th);
+    D->AddPolyline(bot, N, U(c), 0, th);
+    D->AddCircle(ImVec2(cxp, cyp), 0.27f * half, U(c), 28, std::max(1.f, 0.14f * half));
+    D->AddCircleFilled(ImVec2(cxp, cyp), 0.11f * half, U(c), 20);
+}
+
+// ================================================================ hit areas (filled while drawing)
+struct Hit {
+    float x = 0, y = 0, w = 0, h = 0;
+    Act tap;
+    SetB setB;
+    bool val = false;
+    Pick pick;
+    int index = 0;
+    bool slider = false;
+    SetF set;
+    SetB enable;
+    Act release;
+    float tx = 0, tw = 1, mn = 0, mx = 1, step = 0;
+};
+std::vector<Hit> hits;
+
+Hit& newHit(float x, float y, float w, float h) {
+    hits.emplace_back();
+    Hit& t = hits.back();
+    t.x = x;
+    t.y = y;
+    t.w = w;
+    t.h = h;
+    return t;
+}
+
+bool inside(float px, float py, float x, float y, float w, float h) { return px >= x && px <= x + w && py >= y && py <= y + h; }
+
+// a change of a setting: the main thread gets it, and the file is written a moment later
+bool gDirty = false;
+void changed() { gDirty = true; }
+void saveSoon() {
+    gNeedSave = true;
+    gSaveAt = gTime + 1.0f;
+}
+
+// ================================================================ layout
+void layout() {
+    S = clampf(H / 540.f, 0.8f, 3.f) * ui.scale;
+    ES = clampf(44.f * S * ui.iconSize, 24.f, H * 0.3f);
+    if (ui.eyeX < 0.f || ui.eyeY < 0.f) {
+        ui.eyeX = W - ES - 10.f * S;
+        ui.eyeY = H * 0.30f;
+    }
+    ui.eyeX = clampf(ui.eyeX, 0.f, std::max(0.f, W - ES));
+    ui.eyeY = clampf(ui.eyeY, 0.f, std::max(0.f, H - ES));
+
+    fpsW = 88.f * S;
+    fpsH = 24.f * S;
+    if (ui.fpsX < 0.f || ui.fpsY < 0.f) {
+        ui.fpsX = 8.f * S;
+        ui.fpsY = 8.f * S;
+    }
+    ui.fpsX = clampf(ui.fpsX, 0.f, std::max(0.f, W - fpsW));
+    ui.fpsY = clampf(ui.fpsY, 0.f, std::max(0.f, H - fpsH));
+
+    pw = std::min(W - 12.f * S, 540.f * S);
+    ph = std::min(H - 12.f * S, 340.f * S);
+    if (ui.panX < 0.f || ui.panY < 0.f) {
+        ui.panX = std::max(6.f * S, ui.eyeX - pw - 8.f * S);
+        ui.panY = (H - ph) * 0.5f;
+    }
+    ui.panX = clampf(ui.panX, 0.f, std::max(0.f, W - pw));
+    ui.panY = clampf(ui.panY, 0.f, std::max(0.f, H - ph));
+
+    hdrH = 40.f * S;
+    ftH = 22.f * S;
+    sbW = std::min(108.f * S, pw * 0.27f);
+    kx = ui.panX + sbW + 4.f * S;
+    ky = ui.panY + hdrH;
+    kw = pw - sbW - 10.f * S;
+    kBot = ui.panY + ph - ftH - 6.f * S;
+    cTop = ky + 6.f * S;
+    cBot = kBot - 6.f * S;
+    cx = kx + 8.f * S;
+    cw = kw - 16.f * S - 6.f * S;
+}
+
+// ================================================================ widgets
+bool vis(float h) { return cy >= cTop - 0.5f && cy + h <= cBot + 0.5f; }
+
+void drawSwitch(float x, float y, float w, float h, bool on) {
+    rfill(x, y, w, h, h * 0.5f, on ? accentNow() : shade(bgCol(), 0.22f));
+    float kr = h * 0.5f - 2.f * S;
+    disc(on ? x + w - h * 0.5f : x + h * 0.5f, y + h * 0.5f, kr, White);
+}
+
+void drawTrack(float tx, float cyy, float tw, float frac, bool on) {
+    Col acc = on ? accentNow() : shade(bgCol(), 0.30f);
+    frac = clampf(frac, 0.f, 1.f);
+    rfill(tx, cyy - 2.f * S, tw, 4.f * S, 2.f * S, shade(bgCol(), 0.18f));
+    rfill(tx, cyy - 2.f * S, tw * frac, 4.f * S, 2.f * S, acc);
+    disc(tx + tw * frac, cyy, 7.f * S, on ? White : Col(0.7f, 0.72f, 0.76f, 1.f));
+}
+
+void toggle(const std::string& label, bool on, SetB set) {
+    float h = 34.f * S;
+    if (vis(h)) {
+        float y = cy, rh = h - 3.f * S;
+        rfill(cx, y, cw, rh, 7.f * S, cardCol());
+        lbl(cx + 10.f * S, y, cw - 70.f * S, rh, label, Left);
+        drawSwitch(cx + cw - 46.f * S, y + (rh - 20.f * S) * 0.5f, 36.f * S, 20.f * S, on);
+        Hit& t = newHit(cx, y, cw, rh);
+        t.setB = set;
+        t.val = on;
+    }
+    cy += h;
+}
+
+// a name, a slider, the value and a switch on one row; moving the slider also switches the effect on
+void fxRow(const std::string& label, bool on, SetB setOn, float value, float mn, float mx, float step, const char* f, SetF set) {
+    float h = 36.f * S;
+    if (vis(h)) {
+        float y = cy, rh = h - 3.f * S;
+        rfill(cx, y, cw, rh, 7.f * S, cardCol());
+        float sw = 32.f * S, sh = 18.f * S;
+        float sx = cx + cw - sw - 8.f * S;
+        drawSwitch(sx, y + (rh - sh) * 0.5f, sw, sh, on);
+        Hit& t = newHit(sx - 6.f * S, y, sw + 12.f * S, rh);
+        t.setB = setOn;
+        t.val = on;
+
+        float lx = cx + 10.f * S, lw = 84.f * S;
+        lbl(lx, y, lw, rh, label, Left, on ? 1.f : 0.6f);
+        float vw = 42.f * S;
+        float vx = sx - 6.f * S - vw;
+        float tx = lx + lw + 4.f * S;
+        float tw = vx - 6.f * S - tx;
+        drawTrack(tx, y + rh * 0.5f, tw, (value - mn) / (mx - mn), on);
+        lbl(vx, y, vw, rh, fmt(value, f), Right, on ? 1.f : 0.6f);
+
+        Hit& sl = newHit(tx - 8.f * S, y, tw + 16.f * S, rh);
+        sl.slider = true;
+        sl.set = set;
+        sl.enable = setOn;
+        sl.tx = tx;
+        sl.tw = tw;
+        sl.mn = mn;
+        sl.mx = mx;
+        sl.step = step;
+    }
+    cy += h;
+}
+
+// a name and a slider on one row (no switch)
+void slider(const std::string& label, float value, float mn, float mx, float step, const char* f, SetF set, Act release = nullptr) {
+    float h = 36.f * S;
+    if (vis(h)) {
+        float y = cy, rh = h - 3.f * S;
+        rfill(cx, y, cw, rh, 7.f * S, cardCol());
+        float lx = cx + 10.f * S, lw = 100.f * S;
+        lbl(lx, y, lw, rh, label, Left);
+        float vw = 44.f * S;
+        float tx = lx + lw + 4.f * S;
+        float tw = cx + cw - vw - 8.f * S - tx;
+        drawTrack(tx, y + rh * 0.5f, tw, (value - mn) / (mx - mn), true);
+        lbl(tx + tw + 8.f * S, y, vw, rh, fmt(value, f), Right);
+
+        Hit& sl = newHit(tx - 8.f * S, y, tw + 16.f * S, rh);
+        sl.slider = true;
+        sl.set = set;
+        sl.release = release;
+        sl.tx = tx;
+        sl.tw = tw;
+        sl.mn = mn;
+        sl.mx = mx;
+        sl.step = step;
+    }
+    cy += h;
+}
+
+// style 0: plain accent bar; 1: rainbow; 2: a gradient from c0 to c1
+void drawFxTrack(float tx, float cyy, float tw, float frac, int style, Col c0, Col c1, bool en) {
+    float th = 6.f * S;
+    float y = cyy - th * 0.5f;
+    frac = clampf(frac, 0.f, 1.f);
+    float dim = en ? 1.f : 0.45f;
+    if (style == 1) {
+        for (int i = 0; i < 6; i++) {
+            Col a = hueRgb(i / 6.f), b = hueRgb((i + 1) / 6.f);
+            hgrad(tx + tw * i / 6.f, y, tw / 6.f + 0.5f, th, withA(a, dim), withA(b, dim));
+        }
+    } else if (style == 2) {
+        hgrad(tx, y, tw, th, withA(c0, dim), withA(c1, dim));
+    } else {
+        rfill(tx, y, tw, th, th * 0.5f, shade(bgCol(), 0.18f));
+        rfill(tx, y, tw * frac, th, th * 0.5f, en ? accentNow() : shade(bgCol(), 0.30f));
+    }
+    float kxp = tx + tw * frac;
+    disc(kxp, cyy, 8.f * S, withA(White, dim));
+    disc(kxp, cyy, 3.5f * S, en ? accentNow() : shade(bgCol(), 0.30f));
+}
+
+// a tall row: name, value and (when setOn is given) a switch on top, a wide coloured slider below
+void wideFx(const std::string& label, bool on, SetB setOn, float value, float mn, float mx, float step, const char* f, SetF set,
+            int style, Col c0, Col c1) {
+    float h = 50.f * S;
+    if (vis(h)) {
+        float y = cy, rh = h - 3.f * S, pad = 10.f * S;
+        bool en = !setOn || on;
+        rfill(cx, y, cw, rh, 7.f * S, cardCol());
+        float right = cx + cw - pad;
+        if (setOn) {
+            float sw = 34.f * S, sh = 18.f * S, sx = right - sw;
+            drawSwitch(sx, y + 6.f * S, sw, sh, on);
+            Hit& t = newHit(sx - 8.f * S, y, sw + 16.f * S, 28.f * S);
+            t.setB = setOn;
+            t.val = on;
+            right = sx - 8.f * S;
+        }
+        lbl(cx + pad, y + 2.f * S, cw * 0.5f, 26.f * S, label, Left, en ? 1.f : 0.6f);
+        lbl(right - 60.f * S, y + 2.f * S, 60.f * S, 26.f * S, fmt(value, f), Right, en ? 1.f : 0.6f);
+        float tx = cx + pad + 4.f * S, tw = cw - 2.f * pad - 8.f * S;
+        float cyy = y + rh - 11.f * S;
+        drawFxTrack(tx, cyy, tw, (value - mn) / (mx - mn), style, c0, c1, en);
+        Hit& sl = newHit(tx - 10.f * S, y + 26.f * S, tw + 20.f * S, rh - 26.f * S);
+        sl.slider = true;
+        sl.set = set;
+        sl.enable = setOn;
+        sl.tx = tx;
+        sl.tw = tw;
+        sl.mn = mn;
+        sl.mx = mx;
+        sl.step = step;
+    }
+    cy += h;
+}
+
+// preset thumbnails: a small landscape in the colours of each look (sky top, sky bottom, hills)
+const float kThumb[6][9] = {
+    {0.45f, 0.62f, 0.78f, 0.78f, 0.84f, 0.82f, 0.14f, 0.24f, 0.17f},  // Default
+    {0.95f, 0.62f, 0.30f, 1.00f, 0.85f, 0.55f, 0.26f, 0.14f, 0.08f},  // Warm
+    {0.18f, 0.33f, 0.60f, 0.55f, 0.76f, 0.90f, 0.07f, 0.12f, 0.20f},  // Cold
+    {0.55f, 0.20f, 0.90f, 1.00f, 0.50f, 0.70f, 0.12f, 0.06f, 0.25f},  // Vivid
+    {0.10f, 0.30f, 0.40f, 0.90f, 0.60f, 0.35f, 0.05f, 0.08f, 0.10f},  // Cinematic
+    {0.20f, 0.20f, 0.21f, 0.70f, 0.70f, 0.72f, 0.04f, 0.04f, 0.05f},  // Noir
+};
+
+void drawThumb(int i, float x, float y, float w, float h) {
+    const float* c = kThumb[i];
+    const int N = 24;
+    D->PushClipRect(ImVec2(x, y), ImVec2(x + w, y + h), true);
+    for (int k = 0; k < N; k++) {
+        float u = (k + 0.5f) / N;
+        float hill = 0.30f + 0.10f * std::sin(u * 7.f) + 0.07f * std::sin(u * 17.f + 1.f);
+        float x0 = x + w * k / N, x1 = x + w * (k + 1) / N + 0.6f;
+        float yh = y + h * (1.f - hill);  // the top of the hill (v grows upwards)
+        // sky: the bottom colour at the hill line, the top colour at the top
+        D->AddRectFilledMultiColor(ImVec2(x0, y), ImVec2(x1, yh), U(Col(c[0], c[1], c[2], 1.f)), U(Col(c[0], c[1], c[2], 1.f)),
+                                   U(Col(c[3], c[4], c[5], 1.f)), U(Col(c[3], c[4], c[5], 1.f)));
+        // ground: a little brighter towards the top
+        float gt = 0.8f + 0.5f * hill, gb = 0.8f;
+        D->AddRectFilledMultiColor(ImVec2(x0, yh), ImVec2(x1, y + h), U(Col(c[6] * gt, c[7] * gt, c[8] * gt, 1.f)),
+                                   U(Col(c[6] * gt, c[7] * gt, c[8] * gt, 1.f)), U(Col(c[6] * gb, c[7] * gb, c[8] * gb, 1.f)),
+                                   U(Col(c[6] * gb, c[7] * gb, c[8] * gb, 1.f)));
+    }
+    D->PopClipRect();
+}
+
+void presets(const std::vector<std::string>& names, int sel, Pick pick) {
+    float h = 78.f * S;
+    if (vis(h)) {
+        float y = cy;
+        int n = (int)names.size();
+        float gap = 6.f * S;
+        float w = (cw - 12.f * S - (n - 1) * gap) / n;
+        float th = 46.f * S;
+        float x = cx + 6.f * S;
+        for (int i = 0; i < n; i++) {
+            drawThumb(i, x, y + 3.f * S, w, th);
+            if (i == sel) rring(x - 2.f * S, y + 1.f * S, w + 4.f * S, th + 4.f * S, 5.f * S, 2.f * S, accentNow());
+            lbl(x - 4.f * S, y + th + 5.f * S, w + 8.f * S, 18.f * S, names[i], Center, i == sel ? 1.f : 0.75f);
+            Hit& t = newHit(x - 2.f * S, y, w + 4.f * S, th + 24.f * S);
+            t.pick = pick;
+            t.index = i;
+            x += w + gap;
+        }
+    }
+    cy += h;
+}
+
+void section(const std::string& t) {
+    float h = 24.f * S;
+    if (vis(h)) small(cx + 4.f * S, cy + 4.f * S, cw - 8.f * S, h - 4.f * S, t, Left, true);
+    cy += h;
+}
+
+void swatches(const Palette& pal, int sel, Pick pick) {
+    float h = 34.f * S;
+    if (vis(h)) {
+        float y = cy;
+        int n = (int)pal.size();
+        float gap = 6.f * S;
+        float size = std::min(26.f * S, (cw - 16.f * S - (n - 1) * gap) / n);
+        float x = cx + 8.f * S;
+        for (int i = 0; i < n; i++) {
+            float sy = y + (h - 3.f * S - size) * 0.5f;
+            rfill(x, sy, size, size, 6.f * S, fromP(pal[i]));
+            if (i == sel) rring(x - 2.f * S, sy - 2.f * S, size + 4.f * S, size + 4.f * S, 7.f * S, 2.f * S, White);
+            Hit& t = newHit(x - 2.f * S, y, size + 4.f * S, h - 3.f * S);
+            t.pick = pick;
+            t.index = i;
+            x += size + gap;
+        }
+    }
+    cy += h;
+}
+
+void segments(const std::vector<std::string>& names, int sel, Pick pick, float hmul) {
+    float h = 36.f * S * hmul;
+    if (vis(h)) {
+        float y = cy;
+        int n = (int)names.size();
+        float gap = 6.f * S;
+        float w = (cw - (n - 1) * gap) / n;
+        float x = cx;
+        for (int i = 0; i < n; i++) {
+            rfill(x, y, w, h - 3.f * S, 7.f * S, i == sel ? accentNow() : cardCol());
+            lbl(x, y, w, h - 3.f * S, names[i], Center);
+            Hit& t = newHit(x, y, w, h - 3.f * S);
+            t.pick = pick;
+            t.index = i;
+            x += w + gap;
+        }
+    }
+    cy += h;
+}
+
+void button(const std::string& label, Act tap) {
+    float h = 36.f * S;
+    if (vis(h)) {
+        float y = cy;
+        rfill(cx, y, cw, h - 3.f * S, 7.f * S, cardCol());
+        rring(cx, y, cw, h - 3.f * S, 7.f * S, 1.f * S, withA(accentNow(), 0.7f));
+        lbl(cx, y, cw, h - 3.f * S, label, Center);
+        Hit& t = newHit(cx, y, cw, h - 3.f * S);
+        t.tap = tap;
+    }
+    cy += h;
+}
+
+void caption(const std::string& t, int lines = 1) {
+    float h = (8.f + 12.f * lines) * S;
+    if (vis(h)) text(cx + 4.f * S, cy, cw - 8.f * S, h, t, fsz(10.f), Col(0.62f, 0.66f, 0.72f, 1.f), UpperLeft, false, true);
+    cy += h;
+}
+
+// ================================================================ the effect values and presets
+void resetValues() {
+    bool on = fx.on;
+    FxSettings d;  // the defaults of every effect value
+    d.on = on;
+    // keep fog and performance: only the screen effects are reset
+    d.fogMode = fx.fogMode; d.fogR = fx.fogR; d.fogG = fx.fogG; d.fogB = fx.fogB; d.fogThick = fx.fogThick;
+    d.perfLevel = fx.perfLevel; d.noTextures = fx.noTextures; d.hideParticles = fx.hideParticles; d.noPostFx = fx.noPostFx;
+    d.noShadow = fx.noShadow; d.drawDistOn = fx.drawDistOn; d.drawDist = fx.drawDist; d.resIndex = fx.resIndex;
+    d.customRes = fx.customRes; d.customW = fx.customW; d.customH = fx.customH; d.squashOn = fx.squashOn;
+    d.squash = fx.squash; d.fpsIndex = fx.fpsIndex; d.autoClean = fx.autoClean; d.cleanReq = fx.cleanReq;
+    fx = d;
+}
+
+void applyPreset(int i) {
+    resetValues();
+    switch (i) {
+        case 1:  // Warm
+            fx.warmOn = true; fx.temperature = 35.f; fx.tint = 10.f;
+            fx.satOn = true; fx.saturation = 10.f;
+            fx.contrastOn = true; fx.contrast = 5.f;
+            break;
+        case 2:  // Cold
+            fx.warmOn = true; fx.temperature = -35.f; fx.tint = -8.f;
+            fx.satOn = true; fx.saturation = -5.f;
+            fx.contrastOn = true; fx.contrast = 8.f;
+            break;
+        case 3:  // Vivid
+            fx.satOn = true; fx.saturation = 45.f;
+            fx.contrastOn = true; fx.contrast = 18.f;
+            fx.bloomOn = true; fx.bloom = 0.8f; fx.bloomThreshold = 0.7f;
+            break;
+        case 4:  // Cinematic
+            fx.contrastOn = true; fx.contrast = 22.f;
+            fx.satOn = true; fx.saturation = -15.f;
+            fx.warmOn = true; fx.temperature = 12.f; fx.tint = -6.f;
+            fx.vignetteOn = true; fx.vignette = 0.4f;
+            fx.grainOn = true; fx.grain = 0.2f;
+            break;
+        case 5:  // Noir
+            fx.satOn = true; fx.saturation = -100.f;
+            fx.contrastOn = true; fx.contrast = 28.f;
+            fx.exposureOn = true; fx.exposure = -0.2f;
+            fx.vignetteOn = true; fx.vignette = 0.5f;
+            fx.grainOn = true; fx.grain = 0.3f;
+            break;
+        default: break;
+    }
+    if (i > 0) fx.on = true;
+}
+
+// ================================================================ pages
+void pageGeneral() {
+    toggle("Effects on", fx.on, [](bool v) { fx.on = v; });
+    caption(st.visual);
+    section("PRESETS");
+    presets(kPresetNames, gPresetSel, [](int i) { applyPreset(i); gPresetSel = i; });
+    button("Reset to default", [] { resetValues(); gPresetSel = -1; });
+    section("FOG");
+    segments(kFogModes, fx.fogMode, [](int i) { fx.fogMode = i; }, 1.f);
+    caption(fx.fogMode == 1 ? "Fog is off."
+            : fx.fogMode == 2 ? "Custom fog: " + fmt(fx.fogThick, "0") + "% thick."
+                              : "Fog is controlled by the game.");
+    swatches(kFogPalette, indexIn(kFogPalette, fx.fogR, fx.fogG, fx.fogB), [](int i) {
+        fx.fogR = kFogPalette[i][0]; fx.fogG = kFogPalette[i][1]; fx.fogB = kFogPalette[i][2];
+        fx.fogMode = 2;  // picking a colour means "use my fog"
+    });
+    slider("Thickness", fx.fogThick, 0.f, 100.f, 1.f, "0", [](float v) { fx.fogThick = v; fx.fogMode = 2; });
+    section("DISPLAY");
+    toggle("Show FPS", ui.showFps, [](bool v) { ui.showFps = v; });
+}
+
+void pageColor() {
+    segments(kColorSub, ui.colorSub, [](int i) { ui.colorSub = i; scroll = 0.f; }, 0.85f);
+    switch (ui.colorSub) {
+        case 0:
+            wideFx("Hue", fx.hueOn, [](bool v) { fx.hueOn = v; }, fx.hue, -180.f, 180.f, 5.f, "0", [](float v) { fx.hue = v; }, 1, CDark, CDark);
+            wideFx("Saturation", fx.satOn, [](bool v) { fx.satOn = v; }, fx.saturation, -100.f, 100.f, 5.f, "0", [](float v) { fx.saturation = v; }, 2, CGrey, CMagenta);
+            wideFx("Contrast", fx.contrastOn, [](bool v) { fx.contrastOn = v; }, fx.contrast, -100.f, 100.f, 5.f, "0", [](float v) { fx.contrast = v; }, 2, CDark, White);
+            break;
+        case 1:
+            wideFx("Warmth", fx.warmOn, [](bool v) { fx.warmOn = v; }, fx.temperature, -100.f, 100.f, 5.f, "0", [](float v) { fx.temperature = v; }, 2, CBlue, COrange);
+            caption("Cool (left) to warm (right).");
+            break;
+        case 2:
+            wideFx("Tint", fx.warmOn, [](bool v) { fx.warmOn = v; }, fx.tint, -100.f, 100.f, 5.f, "0", [](float v) { fx.tint = v; }, 2, CGreen, CMagenta);
+            caption("Green (left) to magenta (right).");
+            break;
+        default:
+            wideFx("Colour filter", fx.filterOn, [](bool v) { fx.filterOn = v; }, fx.filterStrength, 0.f, 1.f, 0.05f, "0.00", [](float v) { fx.filterStrength = v; }, 0, CDark, CDark);
+            wideFx("Red", true, nullptr, fx.fr, 0.f, 1.f, 0.01f, "0.00", [](float v) { fx.fr = v; fx.filterOn = true; }, 2, CDark, CRed);
+            wideFx("Green", true, nullptr, fx.fg, 0.f, 1.f, 0.01f, "0.00", [](float v) { fx.fg = v; fx.filterOn = true; }, 2, CDark, CGreen);
+            wideFx("Blue", true, nullptr, fx.fb, 0.f, 1.f, 0.01f, "0.00", [](float v) { fx.fb = v; fx.filterOn = true; }, 2, CDark, CBlue);
+            swatches(kFilterPalette, indexIn(kFilterPalette, fx.fr, fx.fg, fx.fb), [](int i) {
+                fx.fr = kFilterPalette[i][0]; fx.fg = kFilterPalette[i][1]; fx.fb = kFilterPalette[i][2];
+                fx.filterOn = true;  // picking a colour means "use it"
+            });
+            break;
+    }
+}
+
+void pageEffects() {
+    fxRow("Exposure", fx.exposureOn, [](bool v) { fx.exposureOn = v; }, fx.exposure, -5.f, 5.f, 0.1f, "0.0", [](float v) { fx.exposure = v; });
+    fxRow("Gamma", fx.gammaOn, [](bool v) { fx.gammaOn = v; }, fx.gamma, -1.f, 1.f, 0.05f, "0.00", [](float v) { fx.gamma = v; });
+    fxRow("Bloom", fx.bloomOn, [](bool v) { fx.bloomOn = v; }, fx.bloom, 0.f, 10.f, 0.1f, "0.0", [](float v) { fx.bloom = v; });
+    fxRow("Vignette", fx.vignetteOn, [](bool v) { fx.vignetteOn = v; }, fx.vignette, 0.f, 1.f, 0.05f, "0.00", [](float v) { fx.vignette = v; });
+    fxRow("Film grain", fx.grainOn, [](bool v) { fx.grainOn = v; }, fx.grain, 0.f, 1.f, 0.05f, "0.00", [](float v) { fx.grain = v; });
+    button("Reset to default", [] { resetValues(); gPresetSel = -1; });
+}
+
+void pageAdvanced() {
+    section("MOTION");
+    fxRow("Motion blur", fx.blurOn, [](bool v) { fx.blurOn = v; }, fx.blurStrength, 0.f, 360.f, 10.f, "0", [](float v) { fx.blurStrength = v; });
+    slider("Blur quality", (float)fx.blurSamples, 4.f, 32.f, 4.f, "0", [](float v) { fx.blurSamples = (int)std::lround(v); });
+    section("LENS");
+    fxRow("Chromatic", fx.chromaOn, [](bool v) { fx.chromaOn = v; }, fx.chroma, 0.f, 1.f, 0.05f, "0.00", [](float v) { fx.chroma = v; });
+    fxRow("Distortion", fx.lensOn, [](bool v) { fx.lensOn = v; }, fx.lens, -100.f, 100.f, 5.f, "0", [](float v) { fx.lens = v; });
+    section("TUNING");
+    slider("Bloom threshold", fx.bloomThreshold, 0.f, 2.f, 0.05f, "0.00", [](float v) { fx.bloomThreshold = v; });
+    slider("Vignette softness", fx.vignetteSmooth, 0.05f, 1.f, 0.05f, "0.00", [](float v) { fx.vignetteSmooth = v; });
+    slider("Grain size", fx.grainSize, 0.3f, 3.f, 0.1f, "0.0", [](float v) { fx.grainSize = v; });
+}
+
+void pagePerf() {
+    section("GRAPHICS");
+    segments(kLevelNames, fx.perfLevel, [](int i) { fx.perfLevel = i; }, 1.f);
+    toggle("No textures", fx.noTextures, [](bool v) { fx.noTextures = v; });
+    toggle("Hide particles", fx.hideParticles, [](bool v) { fx.hideParticles = v; });
+    toggle("No post-processing", fx.noPostFx, [](bool v) { fx.noPostFx = v; });
+    if (fx.noPostFx) caption("This also switches off the visual effects of this mod.", 2);
+    toggle("No shadow", fx.noShadow, [](bool v) { fx.noShadow = v; });
+
+    section("DISTANCE AND RESOLUTION");
+    fxRow("Draw distance", fx.drawDistOn, [](bool v) { fx.drawDistOn = v; }, fx.drawDist, 20.f, 300.f, 10.f, "0", [](float v) { fx.drawDist = v; });
+    caption("Resolution");
+    segments(kResNames, fx.resIndex, [](int i) { fx.resIndex = i; }, 1.f);
+    toggle("Custom screen size", fx.customRes, [](bool v) {
+        fx.customRes = v;
+        if (v) {  // start from the size the game renders at now
+            fx.customW = st.screenW > 0 ? st.screenW : 1280;
+            fx.customH = st.screenH > 0 ? st.screenH : 720;
+        }
+    });
+    if (fx.customRes) {
+        slider("Width", (float)fx.customW, 320.f, 4096.f, 4.f, "0", [](float v) { fx.customW = (int)std::lround(v); });
+        slider("Height", (float)fx.customH, 180.f, 4096.f, 4.f, "0", [](float v) { fx.customH = (int)std::lround(v); });
+    }
+    button("Back to screen size", [] { fx.customRes = false; fx.resIndex = 0; });
+    caption(st.resolution.empty() ? "Resolution: the screen's own size." : st.resolution, 3);
+
+    section("SCREEN SHAPE AND FPS");
+    fxRow("Squash view", fx.squashOn, [](bool v) { fx.squashOn = v; }, fx.squash, 0.4f, 2.5f, 0.05f, "0.00", [](float v) { fx.squash = v; });
+    caption("FPS cap");
+    segments(kFpsNames, fx.fpsIndex, [](int i) { fx.fpsIndex = i; }, 1.f);
+
+    section("MEMORY");
+    toggle("Auto clean", fx.autoClean, [](bool v) { fx.autoClean = v; });
+    button("Clean memory now", [] { fx.cleanReq++; });
+    caption(st.perf.empty() ? "Nothing changed yet." : st.perf, 3);
+}
+
+void resetLook() {
+    ui.scale = 1.f;
+    gScaleDraft = 1.f;
+    ui.panelAlpha = 0.94f;
+    ui.iconSize = 1.f;
+    ui.iconAlpha = 1.f;
+    ui.rainbow = false;
+    ui.rainbowSpeed = 0.5f;
+    ui.rounded = true;
+    ui.lock = false;
+    for (int i = 0; i < 3; i++) {
+        ui.accent[i] = kAccents[0][i];
+        ui.bg[i] = kBackgrounds[0][i];
+    }
+    ui.eyeX = ui.eyeY = ui.panX = ui.panY = ui.fpsX = ui.fpsY = -1.f;
+}
+
+void pageUi() {
+    slider("Menu size", gScaleDraft, 0.6f, 1.8f, 0.05f, "0.00", [](float v) { gScaleDraft = v; }, [] { ui.scale = gScaleDraft; });
+    slider("Menu opacity", ui.panelAlpha, 0.3f, 1.f, 0.02f, "0.00", [](float v) { ui.panelAlpha = v; });
+    slider("Icon size", ui.iconSize, 0.6f, 2.f, 0.05f, "0.00", [](float v) { ui.iconSize = v; });
+    slider("Icon opacity", ui.iconAlpha, 0.2f, 1.f, 0.05f, "0.00", [](float v) { ui.iconAlpha = v; });
+    section("COLOURS");
+    swatches(kAccents, ui.rainbow ? -1 : indexIn(kAccents, ui.accent[0], ui.accent[1], ui.accent[2]), [](int i) {
+        for (int k = 0; k < 3; k++) ui.accent[k] = kAccents[i][k];
+        ui.rainbow = false;
+    });
+    swatches(kBackgrounds, indexIn(kBackgrounds, ui.bg[0], ui.bg[1], ui.bg[2]), [](int i) {
+        for (int k = 0; k < 3; k++) ui.bg[k] = kBackgrounds[i][k];
+    });
+    toggle("Rainbow accent", ui.rainbow, [](bool v) { ui.rainbow = v; });
+    slider("Rainbow speed", ui.rainbowSpeed, 0.1f, 3.f, 0.1f, "0.0", [](float v) { ui.rainbowSpeed = v; });
+    section("BEHAVIOUR");
+    toggle("Rounded corners", ui.rounded, [](bool v) { ui.rounded = v; });
+    toggle("Lock icon and menu position", ui.lock, [](bool v) { ui.lock = v; });
+    button("Reset menu look", [] { resetLook(); });
+}
+
+// ================================================================ the panel, the eye, the FPS counter
+void drawTab(int i, float x, float y, float w, float h, Col acc) {
+    bool sel = i == ui.tab;
+    if (sel) rfill(x, y, w, h, 7.f * S, withA(acc, 0.92f));
+    lbl(x + 12.f * S, y, w - 14.f * S, h, kTabNames[i], Left, sel ? 1.f : 0.72f);
+    Hit& t = newHit(x, y, w, h);
+    t.pick = [](int n) { ui.tab = n; scroll = 0.f; };
+    t.index = i;
+}
+
+void drawPanel() {
+    Col acc = accentNow();
+    float s = S, x = ui.panX, y = ui.panY;
+    Col card = withA(shade(bgCol(), 0.035f), ui.panelAlpha);
+
+    rfill(x, y, pw, ph, 12.f * s, withA(bgCol(), ui.panelAlpha));
+    rring(x, y, pw, ph, 12.f * s, 1.5f * s, withA(acc, 0.75f));
+
+    // ---- left: logo and tabs
+    rfill(x + 6.f * s, y + 6.f * s, sbW - 4.f * s, ph - 12.f * s, 9.f * s, card);
+    eyeGlyph(x + 26.f * s, y + 22.f * s, 24.f * s, acc);
+    text(x + 42.f * s, y + 6.f * s, sbW - 46.f * s, 32.f * s, "VISUAL\nMOBILE", fsz(9.5f, 7.f), White, Left, true);
+
+    float tx = x + 10.f * s, tw = sbW - 12.f * s, th = 32.f * s;
+    float ty = y + hdrH + 4.f * s;
+    for (int i = 0; i < 5; i++) drawTab(i, tx, ty + i * (th + 4.f * s), tw, th, acc);
+    float sy = y + ph - 12.f * s - th;
+    fill(tx + 4.f * s, sy - 8.f * s, tw - 8.f * s, 1.f * s, Col(1.f, 1.f, 1.f, 0.10f));
+    drawTab(5, tx, sy, tw, th, acc);
+
+    // ---- right: header, page, footer
+    rfill(kx, ky, kw, kBot - ky, 9.f * s, card);
+    text(kx + 4.f * s, y, kw - 60.f * s, hdrH, kPageTitles[ui.tab], fsz(10.5f), Col(0.82f, 0.86f, 0.95f, 1.f), Left, true);
+    float cb = 26.f * s;
+    float cbx = x + pw - cb - 10.f * s;
+    rfill(cbx, y + (hdrH - cb) * 0.5f, cb, cb, 7.f * s, cardCol());
+    lbl(cbx, y + (hdrH - cb) * 0.5f, cb, cb, "x", Center);
+    Hit& close = newHit(cbx - 6.f * s, y, cb + 16.f * s, hdrH);
+    close.tap = [] { ui.open = false; };
+
+    float fy = kBot + 2.f * s;
+    if (gTime < gToastUntil) small(kx + 8.f * s, fy, kw - 60.f * s, ftH, gToast, Left);
+    else small(kx + 8.f * s, fy, kw - 60.f * s, ftH, "Adjust your game's visuals to your liking.", Left);
+    small(kx + kw - 60.f * s, fy, 52.f * s, ftH, std::string("v") + kVersion, Right);
+
+    // ---- rows
+    D->PushClipRect(ImVec2(kx, cTop - 1.f), ImVec2(kx + kw, cBot + 1.f), true);
+    cy = cTop - scroll;
+    switch (ui.tab) {
+        case 0: pageGeneral(); break;
+        case 1: pageColor(); break;
+        case 2: pageEffects(); break;
+        case 3: pageAdvanced(); break;
+        case 4: pagePerf(); break;
+        default: pageUi(); break;
+    }
+    contentH = (cy + scroll) - cTop;
+    D->PopClipRect();
+
+    // scroll indicator
+    float viewH = cBot - cTop;
+    if (contentH > viewH + 1.f) {
+        float barH = std::max(18.f * s, viewH * viewH / contentH);
+        float barY = cTop + (viewH - barH) * (scroll / std::max(1.f, contentH - viewH));
+        rfill(kx + kw - 7.f * s, barY, 3.f * s, barH, 1.5f * s, withA(acc, 0.7f));
+    }
+}
+
+void drawEye() {
+    float a = ui.iconAlpha;
+    Col acc = accentNow();
+    float r = ES * 0.5f;
+    float cxp = ui.eyeX + r, cyp = ui.eyeY + r;
+    disc(cxp, cyp, r, withA(bgCol(), 0.88f * a));
+    ring(cxp, cyp, r - S, 2.f * S, withA(acc, a));
+    eyeGlyph(cxp, cyp, ES * 0.74f, withA(acc, a));
+}
+
+void drawFps() {
+    if (!ui.showFps) return;
+    float s = S;
+    int n = (int)std::lround(gFps);
+    Col col = n >= 50 ? Col(0.35f, 0.84f, 0.48f, 1.f) : (n >= 30 ? Col(0.95f, 0.75f, 0.20f, 1.f) : Col(1.f, 0.36f, 0.36f, 1.f));
+    rfill(ui.fpsX, ui.fpsY, fpsW, fpsH, fpsH * 0.5f, withA(bgCol(), 0.82f));
+    rring(ui.fpsX, ui.fpsY, fpsW, fpsH, fpsH * 0.5f, 1.f * s, withA(accentNow(), 0.7f));
+    float size = fsz(11.5f);
+    std::string num = std::to_string(n), rest = " FPS";
+    float w1 = gFont->CalcTextSizeA(size, FLT_MAX, 0, num.c_str()).x, w2 = gFont->CalcTextSizeA(size, FLT_MAX, 0, rest.c_str()).x;
+    float x0 = ui.fpsX + (fpsW - (w1 + w2)) * 0.5f;
+    float th = gFont->CalcTextSizeA(size, FLT_MAX, 0, num.c_str()).y;
+    float y0 = ui.fpsY + (fpsH - th) * 0.5f;
+    D->AddText(gFont, size, ImVec2(x0, y0), U(col), num.c_str());
+    D->AddText(gFont, size, ImVec2(x0 + size * 0.04f, y0), U(col), num.c_str());
+    D->AddText(gFont, size, ImVec2(x0 + w1, y0), U(White), rest.c_str());
+}
+
+// ================================================================ the finger
+enum Mode { ModeNone, ModeTap, ModeSlider, ModeEye, ModePanel, ModeScroll, ModeFps };
+Mode gMode = ModeNone;
+bool gPtrDown = false, gMoved = false;
+float gDownX = 0, gDownY = 0, gLastX = 0, gLastY = 0;
+Hit gTapHit, gActiveHit;
+bool gHasTap = false, gHasActive = false;
+
+const Hit* findHit(float x, float y) {
+    for (int i = (int)hits.size() - 1; i >= 0; i--)
+        if (inside(x, y, hits[i].x, hits[i].y, hits[i].w, hits[i].h)) return &hits[i];
+    return nullptr;
+}
+
+void slideTo(const Hit& h, float x) {
+    float f = clampf((x - h.tx) / std::max(1.f, h.tw), 0.f, 1.f);
+    float v = h.mn + f * (h.mx - h.mn);
+    if (h.step > 0.f) v = std::round(v / h.step) * h.step;
+    v = clampf(v, h.mn, h.mx);
+    gPresetSel = -1;
+    if (h.set) h.set(v);
+    if (h.enable) h.enable(true);
+    changed();
+    saveSoon();
+}
+
+void runTap(const Hit& t) {
+    if (t.tap) t.tap();
+    else if (t.setB) {
+        t.setB(!t.val);
+        gPresetSel = -1;
+    } else if (t.pick) t.pick(t.index);
+    changed();
+    saveSoon();
+}
+
+void pointerDown(float x, float y) {
+    gDownX = gLastX = x;
+    gDownY = gLastY = y;
+    gMoved = false;
+    gMode = ModeNone;
+    gHasTap = gHasActive = false;
+
+    if (ui.open && inside(x, y, ui.panX, ui.panY, pw, ph)) {
+        const Hit* h = findHit(x, y);
+        if (y < ui.panY + hdrH) {
+            if (h) {
+                gMode = ModeTap;
+                gTapHit = *h;
+                gHasTap = true;
+            } else {
+                gMode = ModePanel;
+            }
+            return;
+        }
+        if (h && h->slider) {
+            gActiveHit = *h;
+            gHasActive = true;
+            gMode = ModeSlider;
+            slideTo(gActiveHit, x);
+            return;
+        }
+        if (h) {
+            gTapHit = *h;
+            gHasTap = true;
+        }
+        gMode = ModeTap;  // becomes a scroll if the finger moves
+        return;
+    }
+    if (inside(x, y, ui.eyeX, ui.eyeY, ES, ES)) gMode = ModeEye;
+    else if (ui.showFps && inside(x, y, ui.fpsX, ui.fpsY, fpsW, fpsH)) gMode = ModeFps;
+}
+
+void pointerMove(float x, float y) {
+    float dx = x - gLastX, dy = y - gLastY;
+    gLastX = x;
+    gLastY = y;
+    if (!gMoved && (std::fabs(x - gDownX) > 10.f * S || std::fabs(y - gDownY) > 10.f * S)) gMoved = true;
+    switch (gMode) {
+        case ModeSlider:
+            if (gHasActive) slideTo(gActiveHit, x);
+            break;
+        case ModeEye:
+            if (gMoved && !ui.lock) {
+                ui.eyeX += dx;
+                ui.eyeY += dy;
+            }
+            break;
+        case ModePanel:
+            if (!ui.lock) {
+                ui.panX += dx;
+                ui.panY += dy;
+            }
+            break;
+        case ModeFps:
+            if (gMoved && !ui.lock) {
+                ui.fpsX += dx;
+                ui.fpsY += dy;
+            }
+            break;
+        case ModeTap:
+            if (gMoved && gDownY >= cTop && gDownX >= kx) gMode = ModeScroll;
+            break;
+        case ModeScroll:
+            scroll -= dy;
+            break;
+        default: break;
+    }
+}
+
+void pointerUp(float x, float y) {
+    switch (gMode) {
+        case ModeEye:
+            if (!gMoved) {
+                ui.open = !ui.open;
+                scroll = 0.f;
+            }
+            saveSoon();
+            break;
+        case ModeTap:
+            if (gHasTap && inside(x, y, gTapHit.x, gTapHit.y, gTapHit.w, gTapHit.h)) runTap(gTapHit);
+            break;
+        case ModeSlider:
+            if (gHasActive && gActiveHit.release) gActiveHit.release();
+            saveSoon();
+            break;
+        case ModePanel:
+        case ModeFps:
+            saveSoon();
+            break;
+        default: break;
+    }
+    gMode = ModeNone;
+    gHasTap = gHasActive = false;
+}
+
+void handleFinger(int h) {
+    Touch t = getTouch();
+    bool down = t.valid && t.down;
+    float x = t.x, y = (float)h - t.y;  // the menu counts from the top
+    if (down && !gPtrDown) {
+        gPtrDown = true;
+        pointerDown(x, y);
+    } else if (down && gPtrDown) {
+        pointerMove(x, y);
+    } else if (!down && gPtrDown) {
+        gPtrDown = false;
+        if (t.valid) {
+            gLastX = x;
+            gLastY = y;
+        }
+        pointerUp(gLastX, gLastY);
+    }
+    float viewH = cBot - cTop;
+    scroll = clampf(scroll, 0.f, std::max(0.f, contentH - viewH));
+    gBlockTouch.store(gPtrDown && gMode != ModeNone);
+}
+
+// ================================================================ setup
 void initImGui() {
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
@@ -74,267 +1028,20 @@ void initImGui() {
     io.IniFilename = nullptr;
     io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
     ImFontConfig fc;
-    fc.SizePixels = 26.f;
-    io.Fonts->AddFontDefault(&fc);
+    fc.SizePixels = 32.f;
+    gFont = io.Fonts->AddFontDefault(&fc);
 
     if (!ImGui_ImplOpenGL3_Init("#version 300 es")) {
         logf("menu: ImGui OpenGL backend failed to start");
         gFailed = true;
         return;
     }
-    settingsLoad(ui);
-    fx = currentFx();
+    settingsLoad(ui, fx);
+    gScaleDraft = ui.scale;
+    hits.reserve(160);
     gLast = std::chrono::steady_clock::now();
     gInit = true;
     logf("menu: ImGui ready");
-}
-
-void touchSave() {
-    gNeedSave = true;
-    gSaveTimer = 0.f;
-}
-
-// a switch, a name and a slider; moving the slider also switches the effect on
-bool fxRow(const char* label, bool* on, float* v, float mn, float mx, const char* fmt) {
-    bool ch = false;
-    ImGui::PushID(label);
-    ImGui::TextUnformatted(label);
-    ch |= ImGui::Checkbox("##on", on);
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(-FLT_MIN);
-    if (ImGui::SliderFloat("##v", v, mn, mx, fmt)) {
-        *on = true;
-        ch = true;
-    }
-    ImGui::PopID();
-    return ch;
-}
-
-void drawEye(ImDrawList* dl, ImVec2 p, float size, ImU32 bg, ImU32 acc, float s) {
-    float r = size * 0.5f;
-    ImVec2 c(p.x + r, p.y + r);
-    dl->AddCircleFilled(c, r, bg, 40);
-    dl->AddCircle(c, r - 1.f * s, acc, 40, 2.f * s);
-
-    // the lens of the eye: two arcs that meet at the corners
-    const int N = 20;
-    ImVec2 pts[2 * N];
-    float w = r * 0.66f;
-    for (int i = 0; i < N; i++) {
-        float u = -1.f + 2.f * i / (N - 1);
-        float hl = 0.55f * (1.f - u * u) * w;
-        pts[i] = ImVec2(c.x + u * w, c.y - hl);
-        pts[2 * N - 1 - i] = ImVec2(c.x + u * w, c.y + hl);
-    }
-    dl->AddPolyline(pts, 2 * N, acc, ImDrawFlags_Closed, 2.f * s);
-    dl->AddCircle(c, 0.27f * w, acc, 24, 0.14f * w + 1.f);
-    dl->AddCircleFilled(c, 0.11f * w, acc, 16);
-}
-
-void drawFps(int w, int h, float s) {
-    ImGuiIO& io = ImGui::GetIO();
-    float fw = 92.f * s, fh = 26.f * s;
-    if (ui.fpsX < 0.f || ui.fpsY < 0.f) {
-        ui.fpsX = 8.f * s;
-        ui.fpsY = 8.f * s;
-    }
-    ui.fpsX = std::min(std::max(ui.fpsX, 0.f), std::max(0.f, w - fw));
-    ui.fpsY = std::min(std::max(ui.fpsY, 0.f), std::max(0.f, h - fh));
-
-    ImGui::SetNextWindowPos(ImVec2(ui.fpsX, ui.fpsY));
-    ImGui::SetNextWindowSize(ImVec2(fw, fh));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.f, 0.f));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.f);
-    ImGui::Begin("##fps", nullptr,
-                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoMove |
-                     ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav);
-    ImGui::InvisibleButton("##fpsbtn", ImVec2(fw, fh));
-    static bool moved = false;
-    static ImVec2 down;
-    if (ImGui::IsItemActivated()) {
-        moved = false;
-        down = io.MousePos;
-    }
-    if (ImGui::IsItemActive()) {
-        float dx = io.MousePos.x - down.x, dy = io.MousePos.y - down.y;
-        if (!moved && std::sqrt(dx * dx + dy * dy) > 10.f * s) moved = true;
-        if (moved && !ui.lock) {
-            ui.fpsX += io.MouseDelta.x;
-            ui.fpsY += io.MouseDelta.y;
-            touchSave();
-        }
-    }
-    int fps = (int)std::lround(io.Framerate);
-    ImU32 col = fps >= 50 ? IM_COL32(89, 214, 122, 255) : (fps >= 30 ? IM_COL32(242, 191, 51, 255) : IM_COL32(255, 92, 92, 255));
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    ImVec2 p0 = ImGui::GetWindowPos();
-    ImVec2 p1(p0.x + fw, p0.y + fh);
-    dl->AddRectFilled(p0, p1, IM_COL32(14, 15, 18, 210), fh * 0.5f);
-    dl->AddRect(p0, p1, IM_COL32(31, 148, 255, 180), fh * 0.5f, 0, 1.f * s);
-    char buf[32];
-    snprintf(buf, sizeof(buf), "%d FPS", fps);
-    ImVec2 ts = ImGui::CalcTextSize(buf);
-    dl->AddText(ImVec2(p0.x + (fw - ts.x) * 0.5f, p0.y + (fh - ts.y) * 0.5f), col, buf);
-    ImGui::End();
-    ImGui::PopStyleVar(2);
-}
-
-void drawEyeButton(int w, int h, float s) {
-    ImGuiIO& io = ImGui::GetIO();
-    float size = 44.f * s * ui.iconSize;
-    if (ui.eyeX < 0.f || ui.eyeY < 0.f) {
-        ui.eyeX = w - size - 10.f * s;
-        ui.eyeY = h * 0.30f;
-    }
-    ui.eyeX = std::min(std::max(ui.eyeX, 0.f), std::max(0.f, w - size));
-    ui.eyeY = std::min(std::max(ui.eyeY, 0.f), std::max(0.f, h - size));
-
-    ImGui::SetNextWindowPos(ImVec2(ui.eyeX, ui.eyeY));
-    ImGui::SetNextWindowSize(ImVec2(size, size));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.f, 0.f));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.f);
-    ImGui::Begin("##eye", nullptr,
-                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoMove |
-                     ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav);
-    ImGui::InvisibleButton("##eyebtn", ImVec2(size, size));
-    static bool moved = false;
-    static ImVec2 down;
-    if (ImGui::IsItemActivated()) {
-        moved = false;
-        down = io.MousePos;
-    }
-    if (ImGui::IsItemActive()) {
-        float dx = io.MousePos.x - down.x, dy = io.MousePos.y - down.y;
-        if (!moved && std::sqrt(dx * dx + dy * dy) > 10.f * s) moved = true;
-        if (moved && !ui.lock) {
-            ui.eyeX += io.MouseDelta.x;
-            ui.eyeY += io.MouseDelta.y;
-            touchSave();
-        }
-    }
-    if (ImGui::IsItemDeactivated() && !moved) {
-        ui.open = !ui.open;
-        touchSave();
-    }
-    drawEye(ImGui::GetWindowDrawList(), ImGui::GetWindowPos(), size, IM_COL32(14, 15, 18, 225), IM_COL32(31, 148, 255, 255), s);
-    ImGui::End();
-    ImGui::PopStyleVar(2);
-}
-
-void tabGeneral(bool& fxDirty) {
-    if (ImGui::Checkbox("Effects on", &fx.on)) fxDirty = true;
-    if (ImGui::Checkbox("Show FPS", &ui.showFps)) touchSave();
-    if (ImGui::Button("Reset all effects", ImVec2(-FLT_MIN, 0.f))) {
-        bool on = fx.on;
-        fx = FxSettings();
-        fx.on = on;
-        fxDirty = true;
-    }
-    ImGui::TextDisabled("Turn on \"Effects on\", then pick an effect in the Color tab.");
-}
-
-void tabColor(bool& fxDirty) {
-    bool d = false;
-    d |= fxRow("Exposure", &fx.exposureOn, &fx.exposure, -5.f, 5.f, "%.1f");
-    d |= fxRow("Saturation", &fx.satOn, &fx.saturation, -100.f, 100.f, "%.0f");
-    d |= fxRow("Contrast", &fx.contrastOn, &fx.contrast, -100.f, 100.f, "%.0f");
-    d |= fxRow("Hue", &fx.hueOn, &fx.hue, -180.f, 180.f, "%.0f");
-    d |= fxRow("Warmth (cool to warm)", &fx.warmOn, &fx.temperature, -100.f, 100.f, "%.0f");
-    d |= fxRow("Tint (green to magenta)", &fx.warmOn, &fx.tint, -100.f, 100.f, "%.0f");
-    if (d) {
-        fx.on = true;
-        fxDirty = true;
-    }
-}
-
-void tabSettings() {
-    static float draft = 1.f;
-    static bool sliderActive = false;
-    if (!sliderActive) draft = ui.scale;
-    ImGui::TextUnformatted("Menu size");
-    ImGui::SetNextItemWidth(-FLT_MIN);
-    ImGui::SliderFloat("##scale", &draft, 0.6f, 1.8f, "%.2f");
-    sliderActive = ImGui::IsItemActive();
-    if (ImGui::IsItemDeactivatedAfterEdit()) {
-        ui.scale = draft;
-        touchSave();
-    }
-    ImGui::TextUnformatted("Menu opacity");
-    ImGui::SetNextItemWidth(-FLT_MIN);
-    if (ImGui::SliderFloat("##alpha", &ui.panelAlpha, 0.3f, 1.f, "%.2f")) touchSave();
-    ImGui::TextUnformatted("Icon size");
-    ImGui::SetNextItemWidth(-FLT_MIN);
-    if (ImGui::SliderFloat("##icon", &ui.iconSize, 0.6f, 2.f, "%.2f")) touchSave();
-    if (ImGui::Checkbox("Lock icon and menu position", &ui.lock)) touchSave();
-    if (ImGui::Button("Reset menu look", ImVec2(-FLT_MIN, 0.f))) {
-        ui.scale = 1.f;
-        ui.panelAlpha = 0.94f;
-        ui.iconSize = 1.f;
-        ui.lock = false;
-        ui.eyeX = ui.eyeY = ui.panX = ui.panY = ui.fpsX = ui.fpsY = -1.f;
-        touchSave();
-    }
-}
-
-void drawPanel(int w, int h, float s, bool& fxDirty) {
-    ImGuiIO& io = ImGui::GetIO();
-    float pw = std::min(w - 12.f * s, 520.f * s);
-    float ph = std::min(h - 12.f * s, 330.f * s);
-    if (ui.panX < 0.f || ui.panY < 0.f) {
-        ui.panX = std::max(6.f * s, ui.eyeX - pw - 8.f * s);
-        ui.panY = (h - ph) * 0.5f;
-    }
-    ui.panX = std::min(std::max(ui.panX, 0.f), std::max(0.f, w - pw));
-    ui.panY = std::min(std::max(ui.panY, 0.f), std::max(0.f, h - ph));
-
-    ImGui::SetNextWindowPos(ImVec2(ui.panX, ui.panY), ImGuiCond_Appearing);
-    ImGui::SetNextWindowSize(ImVec2(pw, ph), ImGuiCond_Always);
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(kBg.x, kBg.y, kBg.z, ui.panelAlpha));
-
-    bool open = true;
-    ImGuiWindowFlags fl = ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoResize |
-                          ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
-    if (ui.lock) fl |= ImGuiWindowFlags_NoMove;
-    if (ImGui::Begin("VisualMobile", &open, fl)) {
-        ImVec2 p = ImGui::GetWindowPos();
-        if (std::fabs(p.x - ui.panX) > 0.5f || std::fabs(p.y - ui.panY) > 0.5f) {
-            ui.panX = p.x;
-            ui.panY = p.y;
-            touchSave();
-        }
-
-        float sideW = 104.f * s;
-        ImGui::BeginChild("##side", ImVec2(sideW, 0.f), 0, ImGuiWindowFlags_NoScrollbar);
-        static const char* names[3] = {"General", "Color", "Settings"};
-        for (int i = 0; i < 3; i++) {
-            bool sel = ui.tab == i;
-            ImGui::PushStyleColor(ImGuiCol_Button, sel ? kAccent : ImVec4(0.f, 0.f, 0.f, 0.f));
-            if (ImGui::Button(names[i], ImVec2(-FLT_MIN, 38.f * s))) {
-                ui.tab = i;
-                touchSave();
-            }
-            ImGui::PopStyleColor();
-        }
-        ImGui::EndChild();
-
-        ImGui::SameLine();
-        ImGui::BeginChild("##content", ImVec2(0.f, 0.f), 0, 0);
-        if (ui.tab == 0) tabGeneral(fxDirty);
-        else if (ui.tab == 1) tabColor(fxDirty);
-        else tabSettings();
-
-        // scroll by dragging the page with a finger
-        if (ImGui::IsWindowHovered() && ImGui::IsMouseDragging(0, 8.f * s) && !ImGui::IsAnyItemActive())
-            ImGui::SetScrollY(ImGui::GetScrollY() - io.MouseDelta.y);
-        ImGui::EndChild();
-    }
-    ImGui::End();
-    ImGui::PopStyleColor();
-
-    if (!open) {
-        ui.open = false;
-        touchSave();
-    }
 }
 
 }  // namespace
@@ -353,52 +1060,41 @@ void menuFrame(int w, int h) {
     gLast = now;
     if (dt <= 0.f || dt > 0.5f) dt = 1.f / 60.f;
     io.DeltaTime = dt;
+    gTime += dt;
+    gFps = gFps <= 0.f ? 1.f / dt : lerpf(gFps, 1.f / dt, 0.1f);
 
-    float s = std::min(4.f, std::max(0.6f, (h / 540.f) * ui.scale));
-    if (std::fabs(s - gScaleApplied) > 0.001f) {
-        applyStyle(s);
-        gScaleApplied = s;
+    W = (float)w;
+    H = (float)h;
+    st = currentStatus();
+    if (gToastSeq < 0) gToastSeq = st.toastSeq;
+    if (st.toastSeq != gToastSeq) {
+        gToastSeq = st.toastSeq;
+        gToast = st.toast;
+        gToastUntil = gTime + 3.f;
     }
-    io.FontGlobalScale = s * 0.5f;  // the font is made at 26 px, which is right for s = 2 (1080 px high)
+    if (gMode != ModeSlider) gScaleDraft = ui.scale;
 
-    // the finger, read by the game's main thread, becomes the mouse
-    Touch t = getTouch();
-    if (t.valid) {
-        io.AddMousePosEvent(t.x, (float)h - t.y);
-        if (t.down != gLastDown) {
-            io.AddMouseButtonEvent(0, t.down);
-            gLastDown = t.down;
-        }
-    } else {
-        if (gLastDown) {
-            io.AddMouseButtonEvent(0, false);
-            gLastDown = false;
-        }
-        io.AddMousePosEvent(-FLT_MAX, -FLT_MAX);
-    }
+    layout();
+    handleFinger(h);
+    layout();  // the finger may have moved things
 
     ImGui_ImplOpenGL3_NewFrame();
     ImGui::NewFrame();
-
-    bool fxDirty = false;
-    if (ui.showFps) drawFps(w, h, s);
-    drawEyeButton(w, h, s);
-    if (ui.open) drawPanel(w, h, s, fxDirty);
-
+    D = ImGui::GetForegroundDrawList();
+    hits.clear();
+    drawFps();
+    drawEye();
+    if (ui.open) drawPanel();
     ImGui::Render();
-    gBlockTouch.store(io.WantCaptureMouse);
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
-    if (fxDirty) {
+    if (gDirty) {
+        gDirty = false;
         publishFx(fx);
-        touchSave();
     }
-    if (gNeedSave) {
-        gSaveTimer += dt;
-        if (gSaveTimer > 1.5f) {
-            gNeedSave = false;
-            settingsSave(ui);
-        }
+    if (gNeedSave && gTime >= gSaveAt) {
+        gNeedSave = false;
+        settingsSave(ui, fx);
     }
 }
 

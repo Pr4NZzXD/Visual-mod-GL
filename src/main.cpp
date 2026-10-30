@@ -11,9 +11,11 @@
 
 #include "And64InlineHook.hpp"
 #include "effects.h"
+#include "fog.h"
 #include "il2cpp.h"
 #include "log.h"
 #include "menu.h"
+#include "perf.h"
 #include "shared.h"
 
 using namespace vm;
@@ -77,6 +79,11 @@ float hookDeltaTime(const void* mi) {
             gInTick = true;
             fx::pollTouch();
             fx::tick();
+            static FxSettings cur;
+            static unsigned curVersion = 0;
+            takeFx(cur, curVersion);
+            fog::tick(cur);
+            perf::tick(cur);
             gInTick = false;
         }
     }

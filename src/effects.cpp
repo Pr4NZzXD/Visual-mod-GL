@@ -34,6 +34,9 @@ struct Ctx {
 
     Il2CppClass *cObject = nullptr, *cScriptable = nullptr, *cGameObject = nullptr, *cBehaviour = nullptr;
     Il2CppClass *cVol = nullptr, *cProf = nullptr, *cLayer = nullptr, *cFxBase = nullptr, *cCG = nullptr;
+    // optional: the game build may have stripped them
+    Il2CppClass *cMB = nullptr, *cBloom = nullptr, *cVig = nullptr, *cGrain = nullptr, *cChroma = nullptr, *cLens = nullptr;
+    const MethodInfo* mMotionVectors = nullptr;
 
     const MethodInfo *mFindObjs = nullptr, *mDontDestroy = nullptr, *mCreateSO = nullptr, *mAddSettings = nullptr;
     const MethodInfo *mGoCtor = nullptr, *mAddComp = nullptr, *mSetLayer = nullptr, *mSetActive = nullptr, *mGetEnabled = nullptr;
@@ -47,6 +50,13 @@ struct Ctx {
     const MethodInfo *mTouchCount = nullptr, *mGetTouch = nullptr;
 } C;
 
+// one effect of the profile: its switch, its "active" flag and up to two values
+struct Eff {
+    Il2CppObject* obj = nullptr;
+    size_t offActive = 0;
+    Param enabled, a, b;
+};
+
 struct Built {
     bool built = false;
     Il2CppObject* profile = nullptr;
@@ -56,7 +66,8 @@ struct Built {
     bool active = true;
 
     size_t offActive = 0;
-    Param enabled, postExposure, brightness, saturation, contrast, hueShift, temperature, tint;
+    Param enabled, postExposure, brightness, saturation, contrast, hueShift, temperature, tint, gamma, colorFilter;
+    Eff mb, bloom, vig, grain, chroma, lens;
 } B;
 
 bool gWasOn = false;
@@ -140,8 +151,17 @@ bool resolve() {
         }
         return false;
     }
+    C.cMB = findClass(PP, "MotionBlur");
+    C.cBloom = findClass(PP, "Bloom");
+    C.cVig = findClass(PP, "Vignette");
+    C.cGrain = findClass(PP, "Grain");
+    C.cChroma = findClass(PP, "ChromaticAberration");
+    C.cLens = findClass(PP, "LensDistortion");
+    C.mMotionVectors = findMethod(findClass("UnityEngine", "SystemInfo"), "get_supportsMotionVectors", 0);
     C.resolved = true;
-    logf("effects: post-processing classes found");
+    logf("effects: post-processing classes found%s%s%s%s%s%s", C.cMB ? "" : " (no MotionBlur)", C.cBloom ? "" : " (no Bloom)",
+         C.cVig ? "" : " (no Vignette)", C.cGrain ? "" : " (no Grain)", C.cChroma ? "" : " (no ChromaticAberration)",
+         C.cLens ? "" : " (no LensDistortion)");
     return true;
 }
 
@@ -218,6 +238,22 @@ void setF(const Param& p, float v, bool ov) {
     *fieldPtr<bool>(p.obj, p.offOverride) = ov;
 }
 
+void setI(const Param& p, int v, bool ov) {
+    if (!p.obj) return;
+    *fieldPtr<int>(p.obj, p.offValue) = v;
+    *fieldPtr<bool>(p.obj, p.offOverride) = ov;
+}
+
+void setV4(const Param& p, float x, float y, float z, float w, bool ov) {
+    if (!p.obj) return;
+    float* d = fieldPtr<float>(p.obj, p.offValue);  // Vector4 and Color are both four floats
+    d[0] = x;
+    d[1] = y;
+    d[2] = z;
+    d[3] = w;
+    *fieldPtr<bool>(p.obj, p.offOverride) = ov;
+}
+
 void setB(const Param& p, bool v, bool ov) {
     if (!p.obj) return;
     *fieldPtr<bool>(p.obj, p.offValue) = v;
@@ -231,6 +267,28 @@ Il2CppObject* newEffect(Il2CppClass* k) {
     void* b[1] = {fx};
     invoke(C.mAddSettings, B.profile, b);
     return fx;
+}
+
+// An extra effect that may be missing or fail without taking the rest down.
+Eff makeEff(Il2CppClass* k, const char* name, const char* a, const char* b) {
+    Eff r;
+    if (!k) return r;
+    Il2CppObject* o = newEffect(k);
+    if (!o) {
+        logf("effects: could not create %s", name);
+        return r;
+    }
+    A.gchandle_new(o, 0);
+    r.obj = o;
+    r.offActive = fieldOffset(classOf(o), "active");
+    r.enabled = getParam(o, "enabled");
+    if (a) r.a = getParam(o, a);
+    if (b) r.b = getParam(o, b);
+    if (!r.enabled.obj || (a && !r.a.obj)) {
+        logf("effects: %s has no usable fields, left out", name);
+        r.obj = nullptr;
+    }
+    return r;
 }
 
 void destroyAll() {
@@ -285,6 +343,14 @@ bool build() {
     B.hueShift = getParam(B.cg, "hueShift");
     B.temperature = getParam(B.cg, "temperature");
     B.tint = getParam(B.cg, "tint");
+    B.gamma = getParam(B.cg, "gamma");
+    B.colorFilter = getParam(B.cg, "colorFilter");
+    B.mb = makeEff(C.cMB, "MotionBlur", "shutterAngle", "sampleCount");
+    B.bloom = makeEff(C.cBloom, "Bloom", "intensity", "threshold");
+    B.vig = makeEff(C.cVig, "Vignette", "intensity", "smoothness");
+    B.grain = makeEff(C.cGrain, "Grain", "intensity", "size");
+    B.chroma = makeEff(C.cChroma, "ChromaticAberration", "intensity", nullptr);
+    B.lens = makeEff(C.cLens, "LensDistortion", "intensity", nullptr);
 
     std::string layerText;
     for (int layer : layers) {
@@ -327,26 +393,75 @@ bool build() {
     return true;
 }
 
+float clamp01(float v) { return std::min(1.f, std::max(0.f, v)); }
+float clampf(float v, float lo, float hi) { return std::min(hi, std::max(lo, v)); }
+
+// switch of one extra effect: enabled + active + overridden
+void effSwitch(const Eff& f, bool on) {
+    if (!f.obj) return;
+    setB(f.enabled, on, on);
+    if (f.offActive) *fieldPtr<bool>(f.obj, f.offActive) = on;
+}
+
 void apply(const FxSettings& s) {
-    bool any = s.exposureOn || s.satOn || s.contrastOn || s.hueOn || s.warmOn;
+    // ---- colour grading: only the switched-on values are overridden; the rest stays the game's
+    bool any = s.exposureOn || s.satOn || s.contrastOn || s.hueOn || s.warmOn || s.filterOn || s.gammaOn;
     setB(B.enabled, any, any);
     if (B.offActive) *fieldPtr<bool>(B.cg, B.offActive) = any;
 
     // postExposure works when the grading is HDR, brightness when it is LDR: both are set so it works either way
     setF(B.postExposure, s.exposure, s.exposureOn);
     float br = std::pow(2.f, s.exposure) * 100.f - 100.f;
-    setF(B.brightness, std::min(100.f, std::max(-100.f, br)), s.exposureOn);
+    setF(B.brightness, clampf(br, -100.f, 100.f), s.exposureOn);
+    // gamma: the fourth number of the gamma wheel brightens (+) or darkens (-) the mid-tones
+    setV4(B.gamma, 1.f, 1.f, 1.f, s.gamma, s.gammaOn);
     setF(B.saturation, s.saturation, s.satOn);
     setF(B.contrast, s.contrast, s.contrastOn);
     setF(B.hueShift, s.hue, s.hueOn);
     setF(B.temperature, s.temperature, s.warmOn);
     setF(B.tint, s.tint, s.warmOn);
+    float k = clamp01(s.filterStrength);
+    setV4(B.colorFilter, 1.f + (s.fr - 1.f) * k, 1.f + (s.fg - 1.f) * k, 1.f + (s.fb - 1.f) * k, 1.f, s.filterOn);
+
+    // ---- the extra effects (each one only when the game has it)
+    effSwitch(B.mb, s.blurOn);
+    setF(B.mb.a, clampf(s.blurStrength, 0.f, 360.f), s.blurOn);
+    setI(B.mb.b, std::min(32, std::max(4, s.blurSamples)), s.blurOn);
+    effSwitch(B.bloom, s.bloomOn);
+    setF(B.bloom.a, std::max(0.f, s.bloom), s.bloomOn);
+    setF(B.bloom.b, std::max(0.f, s.bloomThreshold), s.bloomOn);
+    effSwitch(B.vig, s.vignetteOn);
+    setF(B.vig.a, clamp01(s.vignette), s.vignetteOn);
+    setF(B.vig.b, clampf(s.vignetteSmooth, 0.01f, 1.f), s.vignetteOn);
+    effSwitch(B.grain, s.grainOn);
+    setF(B.grain.a, clamp01(s.grain), s.grainOn);
+    setF(B.grain.b, clampf(s.grainSize, 0.3f, 3.f), s.grainOn);
+    effSwitch(B.chroma, s.chromaOn);
+    setF(B.chroma.a, clamp01(s.chroma), s.chromaOn);
+    effSwitch(B.lens, s.lensOn);
+    setF(B.lens.a, clampf(s.lens, -100.f, 100.f), s.lensOn);
 
     if (!gLoggedApplied) {
         gLoggedApplied = true;
         logf("effects: applied (colour effects %s)", any ? "on" : "off");
     }
     gForce = false;
+}
+
+// the line under "Effects on" in the General tab
+std::string buildStatus(const FxSettings& s) {
+    std::string t = "Active";
+    if (s.blurOn) {
+        if (!B.mb.obj) t += "  |  motion blur: not in this game";
+        else if (C.mMotionVectors && !callBool(C.mMotionVectors, nullptr, nullptr, true)) t += "  |  motion blur: not supported on this device";
+        else t += "  |  motion blur on";
+    }
+    if (s.bloomOn && !B.bloom.obj) t += "  |  bloom: not in this game";
+    if (s.vignetteOn && !B.vig.obj) t += "  |  vignette: not in this game";
+    if (s.grainOn && !B.grain.obj) t += "  |  grain: not in this game";
+    if (s.chromaOn && !B.chroma.obj) t += "  |  chromatic: not in this game";
+    if (s.lensOn && !B.lens.obj) t += "  |  distortion: not in this game";
+    return t;
 }
 
 }  // namespace
@@ -359,15 +474,19 @@ void tick() {
         gForce = true;
     }
 
-    if (!resolve()) return;
-    int64_t now = nowMs();
-    if (now < gRetryAtMs) return;
-
     if (!gCur.on) {
         if (gWasOn && B.built) setAllActive(false);
+        if (gWasOn) setVisualStatus("Off");
         gWasOn = false;
         return;
     }
+
+    if (!resolve()) {
+        setVisualStatus(C.gaveUp ? "Post-processing types not found" : "Waiting for the post-processing classes");
+        return;
+    }
+    int64_t now = nowMs();
+    if (now < gRetryAtMs) return;
     if (!gWasOn) {
         gWasOn = true;
         gForce = true;
@@ -377,7 +496,10 @@ void tick() {
         destroyAll();
         if (now < gNextBuildMs) return;
         gNextBuildMs = now + 1000;
-        if (!build()) return;
+        if (!build()) {
+            setVisualStatus(gCur.noPostFx ? "Off while \"No post-processing\" is on" : "Waiting for the post-processing camera");
+            return;
+        }
     } else {
         if (!B.active) {
             setAllActive(true);
@@ -403,7 +525,10 @@ void tick() {
         }
     }
 
-    if (gForce) apply(gCur);
+    if (gForce) {
+        apply(gCur);
+        setVisualStatus(buildStatus(gCur));
+    }
 }
 
 void pollTouch() {
