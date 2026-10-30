@@ -35,7 +35,7 @@ struct Ctx {
     Il2CppClass *cObject = nullptr, *cScriptable = nullptr, *cGameObject = nullptr, *cBehaviour = nullptr;
     Il2CppClass *cVol = nullptr, *cProf = nullptr, *cLayer = nullptr, *cFxBase = nullptr, *cCG = nullptr;
     // optional: the game build may have stripped them
-    Il2CppClass *cMB = nullptr, *cBloom = nullptr, *cVig = nullptr, *cGrain = nullptr, *cChroma = nullptr, *cLens = nullptr;
+    Il2CppClass *cMB = nullptr, *cBloom = nullptr, *cVig = nullptr, *cGrain = nullptr, *cChroma = nullptr, *cLens = nullptr, *cAO = nullptr, *cDof = nullptr;
     const MethodInfo* mMotionVectors = nullptr;
 
     const MethodInfo *mFindObjs = nullptr, *mDontDestroy = nullptr, *mCreateSO = nullptr, *mAddSettings = nullptr;
@@ -54,7 +54,7 @@ struct Ctx {
 struct Eff {
     Il2CppObject* obj = nullptr;
     size_t offActive = 0;
-    Param enabled, a, b;
+    Param enabled, a, b, c, d, e;
 };
 
 struct Built {
@@ -67,7 +67,8 @@ struct Built {
 
     size_t offActive = 0;
     Param enabled, postExposure, brightness, saturation, contrast, hueShift, temperature, tint, gamma, colorFilter;
-    Eff mb, bloom, vig, grain, chroma, lens;
+    Eff mb, bloom, vig, grain, chroma, lens, ao, dof;
+    int regAo = -1, regDof = -1;   // is the effect known to the game's post-processing manager? 1 yes, 0 no, -1 unknown
 } B;
 
 bool gWasOn = false;
@@ -157,11 +158,13 @@ bool resolve() {
     C.cGrain = findClass(PP, "Grain");
     C.cChroma = findClass(PP, "ChromaticAberration");
     C.cLens = findClass(PP, "LensDistortion");
+    C.cAO = findClass(PP, "AmbientOcclusion");
+    C.cDof = findClass(PP, "DepthOfField");
     C.mMotionVectors = findMethod(findClass("UnityEngine", "SystemInfo"), "get_supportsMotionVectors", 0);
     C.resolved = true;
-    logf("effects: post-processing classes found%s%s%s%s%s%s", C.cMB ? "" : " (no MotionBlur)", C.cBloom ? "" : " (no Bloom)",
+    logf("effects: post-processing classes found%s%s%s%s%s%s%s%s", C.cMB ? "" : " (no MotionBlur)", C.cBloom ? "" : " (no Bloom)",
          C.cVig ? "" : " (no Vignette)", C.cGrain ? "" : " (no Grain)", C.cChroma ? "" : " (no ChromaticAberration)",
-         C.cLens ? "" : " (no LensDistortion)");
+         C.cLens ? "" : " (no LensDistortion)", C.cAO ? "" : " (no AmbientOcclusion)", C.cDof ? "" : " (no DepthOfField)");
     return true;
 }
 
@@ -291,6 +294,28 @@ Eff makeEff(Il2CppClass* k, const char* name, const char* a, const char* b) {
     return r;
 }
 
+// The post-processing manager keeps a list of the effect types the build kept. A type that is not on that list can be
+// added to a profile but is never drawn: the layer has nothing to run it with.
+int registered(Il2CppClass* k) {
+    if (!k) return 0;
+    Il2CppClass* cm = findClass(PP, "PostProcessManager");
+    if (!cm) return -1;
+    const MethodInfo* mi = findMethod(cm, "get_instance", 0);
+    if (!mi) return -1;
+    Il2CppObject* mgr = invoke(mi, nullptr, nullptr);
+    if (!mgr) return -1;
+    size_t off = fieldOffset(cm, "settingsTypes");
+    if (!off) return -1;
+    Il2CppObject* dict = *fieldPtr<Il2CppObject*>(mgr, off);
+    if (!dict) return -1;
+    const MethodInfo* ck = findMethod(classOf(dict), "ContainsKey", 1);
+    if (!ck) return -1;
+    void* a[1] = {typeObject(k)};
+    void* p = unbox(invoke(ck, dict, a));
+    if (!p) return -1;
+    return *static_cast<bool*>(p) ? 1 : 0;
+}
+
 void destroyAll() {
     // the objects are left to Unity; we only forget them (a destroyed volume unregisters itself)
     B = Built();
@@ -351,6 +376,22 @@ bool build() {
     B.grain = makeEff(C.cGrain, "Grain", "intensity", "size");
     B.chroma = makeEff(C.cChroma, "ChromaticAberration", "intensity", nullptr);
     B.lens = makeEff(C.cLens, "LensDistortion", "intensity", nullptr);
+    B.ao = makeEff(C.cAO, "AmbientOcclusion", "intensity", "radius");
+    if (B.ao.obj) {
+        B.ao.c = getParam(B.ao.obj, "quality");
+        B.ao.d = getParam(B.ao.obj, "ambientOnly");
+        B.ao.e = getParam(B.ao.obj, "mode");
+    }
+    B.dof = makeEff(C.cDof, "DepthOfField", "focusDistance", "aperture");
+    if (B.dof.obj) {
+        B.dof.c = getParam(B.dof.obj, "focalLength");
+        B.dof.d = getParam(B.dof.obj, "kernelSize");
+    }
+
+    B.regAo = registered(C.cAO);
+    B.regDof = registered(C.cDof);
+    logf("effects: ambient occlusion: %s, known to the manager: %d | depth of field: %s, known to the manager: %d",
+         B.ao.obj ? "created" : "missing", B.regAo, B.dof.obj ? "created" : "missing", B.regDof);
 
     std::string layerText;
     for (int layer : layers) {
@@ -441,6 +482,21 @@ void apply(const FxSettings& s) {
     effSwitch(B.lens, s.lensOn);
     setF(B.lens.a, clampf(s.lens, -100.f, 100.f), s.lensOn);
 
+    // ambient occlusion: mode 0 is the standard one (works without compute shaders); quality 1..3 = low..high
+    effSwitch(B.ao, s.aoOn);
+    setF(B.ao.a, clampf(s.aoIntensity, 0.f, 4.f), s.aoOn);
+    setF(B.ao.b, clampf(s.aoRadius, 0.05f, 3.f), s.aoOn);
+    setI(B.ao.c, 1 + std::min(2, std::max(0, s.aoQuality)), s.aoOn);
+    setB(B.ao.d, false, s.aoOn);
+    setI(B.ao.e, 0, s.aoOn);
+
+    // depth of field: kernel size 0 small .. 2 large
+    effSwitch(B.dof, s.dofOn);
+    setF(B.dof.a, clampf(s.dofFocus, 0.1f, 50.f), s.dofOn);
+    setF(B.dof.b, clampf(s.dofAperture, 1.f, 32.f), s.dofOn);
+    setF(B.dof.c, clampf(s.dofLength, 10.f, 300.f), s.dofOn);
+    setI(B.dof.d, std::min(2, std::max(0, s.dofQuality)), s.dofOn);
+
     if (!gLoggedApplied) {
         gLoggedApplied = true;
         logf("effects: applied (colour effects %s)", any ? "on" : "off");
@@ -461,6 +517,10 @@ std::string buildStatus(const FxSettings& s) {
     if (s.grainOn && !B.grain.obj) t += "  |  grain: not in this game";
     if (s.chromaOn && !B.chroma.obj) t += "  |  chromatic: not in this game";
     if (s.lensOn && !B.lens.obj) t += "  |  distortion: not in this game";
+    if (s.aoOn && !B.ao.obj) t += "  |  ambient occlusion: not in this game";
+    else if (s.aoOn && B.regAo == 0) t += "  |  ambient occlusion: this game cannot draw it";
+    if (s.dofOn && !B.dof.obj) t += "  |  depth of field: not in this game";
+    else if (s.dofOn && B.regDof == 0) t += "  |  depth of field: this game cannot draw it";
     return t;
 }
 
