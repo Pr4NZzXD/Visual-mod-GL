@@ -16,6 +16,7 @@
 #include "log.h"
 #include "menu.h"
 #include "perf.h"
+#include "scene.h"
 #include "shared.h"
 
 using namespace vm;
@@ -84,6 +85,7 @@ float hookDeltaTime(const void* mi) {
             takeFx(cur, curVersion);
             fog::tick(cur);
             perf::tick(cur);
+            scene::tick(cur);
             gInTick = false;
         }
     }

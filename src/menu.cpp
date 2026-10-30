@@ -45,6 +45,9 @@ float gScaleDraft = 1.f;
 std::string gToast;
 float gToastUntil = 0.f;
 int gToastSeq = -1;
+constexpr int kGraphN = 90;
+float gFrameMs[kGraphN] = {};  // the last frame times, oldest first
+int gFramePos = 0;
 
 ImDrawList* D = nullptr;
 ImFont* gFont = nullptr;
@@ -52,7 +55,7 @@ ImFont* gFont = nullptr;
 // layout, computed every frame from the screen size
 float W = 0, H = 0;
 float S = 1.f, ES = 44.f;
-float fpsW, fpsH, pw, ph, hdrH, ftH, sbW;
+float fpsW, fpsH, fpsBoxW, fpsBoxH, graphW, graphH, pw, ph, hdrH, ftH, sbW;
 float kx, ky, kw, kBot, cTop, cBot, cx, cw, cy;
 float scroll = 0.f, contentH = 0.f;
 
@@ -80,6 +83,7 @@ const std::vector<std::string> kFogModes = {"Game default", "No fog", "Custom"};
 const std::vector<std::string> kLevelNames = {"Off", "Low", "Ultra low"};
 const std::vector<std::string> kResNames = {"100%", "75%", "60%", "50%", "35%"};
 const std::vector<std::string> kFpsNames = {"Game default", "30", "45", "60", "90"};
+const std::vector<std::string> kTargetNames = {"30 FPS", "45 FPS", "60 FPS"};
 
 // ================================================================ colours
 float clampf(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); }
@@ -269,12 +273,17 @@ void layout() {
 
     fpsW = 88.f * S;
     fpsH = 24.f * S;
+    graphW = 150.f * S;
+    graphH = 44.f * S;
+    fpsBoxW = ui.showGraph ? std::max(fpsW, graphW) : fpsW;
+    fpsBoxH = (ui.showFps ? fpsH : 0.f) + (ui.showGraph ? (ui.showFps ? 4.f * S : 0.f) + graphH : 0.f);
+    if (fpsBoxH < fpsH) fpsBoxH = fpsH;
     if (ui.fpsX < 0.f || ui.fpsY < 0.f) {
         ui.fpsX = 8.f * S;
         ui.fpsY = 8.f * S;
     }
-    ui.fpsX = clampf(ui.fpsX, 0.f, std::max(0.f, W - fpsW));
-    ui.fpsY = clampf(ui.fpsY, 0.f, std::max(0.f, H - fpsH));
+    ui.fpsX = clampf(ui.fpsX, 0.f, std::max(0.f, W - fpsBoxW));
+    ui.fpsY = clampf(ui.fpsY, 0.f, std::max(0.f, H - fpsBoxH));
 
     pw = std::min(W - 12.f * S, 540.f * S);
     ph = std::min(H - 12.f * S, 340.f * S);
@@ -578,6 +587,8 @@ void resetValues() {
     d.noShadow = fx.noShadow; d.drawDistOn = fx.drawDistOn; d.drawDist = fx.drawDist; d.resIndex = fx.resIndex;
     d.customRes = fx.customRes; d.customW = fx.customW; d.customH = fx.customH; d.squashOn = fx.squashOn;
     d.squash = fx.squash; d.fpsIndex = fx.fpsIndex; d.autoClean = fx.autoClean; d.cleanReq = fx.cleanReq;
+    d.ambientOn = fx.ambientOn; d.ambient = fx.ambient; d.lightBoostOn = fx.lightBoostOn; d.lightBoost = fx.lightBoost;
+    d.fovOn = fx.fovOn; d.fov = fx.fov; d.adaptive = fx.adaptive; d.adaptTarget = fx.adaptTarget;
     fx = d;
 }
 
@@ -637,6 +648,7 @@ void pageGeneral() {
     slider("Thickness", fx.fogThick, 0.f, 100.f, 1.f, "0", [](float v) { fx.fogThick = v; fx.fogMode = 2; });
     section("DISPLAY");
     toggle("Show FPS", ui.showFps, [](bool v) { ui.showFps = v; });
+    toggle("Show frame graph", ui.showGraph, [](bool v) { ui.showGraph = v; });
 }
 
 void pageColor() {
@@ -675,6 +687,11 @@ void pageEffects() {
     fxRow("Vignette", fx.vignetteOn, [](bool v) { fx.vignetteOn = v; }, fx.vignette, 0.f, 1.f, 0.05f, "0.00", [](float v) { fx.vignette = v; });
     fxRow("Film grain", fx.grainOn, [](bool v) { fx.grainOn = v; }, fx.grain, 0.f, 1.f, 0.05f, "0.00", [](float v) { fx.grain = v; });
     button("Reset to default", [] { resetValues(); gPresetSel = -1; });
+    section("DARK SCENES");
+    fxRow("Brightness", fx.ambientOn, [](bool v) { fx.ambientOn = v; }, fx.ambient, 0.f, 100.f, 1.f, "0", [](float v) { fx.ambient = v; });
+    fxRow("Light boost", fx.lightBoostOn, [](bool v) { fx.lightBoostOn = v; }, fx.lightBoost, 1.f, 3.f, 0.1f, "0.0", [](float v) { fx.lightBoost = v; });
+    fxRow("Field of view", fx.fovOn, [](bool v) { fx.fovOn = v; }, fx.fov, 40.f, 110.f, 1.f, "0", [](float v) { fx.fov = v; });
+    caption("Brightness adds flat light to shadowed areas; baked shadows stay. Light boost multiplies every light. These stay when you pick a preset.", 3);
 }
 
 void pageAdvanced() {
@@ -703,6 +720,11 @@ void pagePerf() {
     fxRow("Draw distance", fx.drawDistOn, [](bool v) { fx.drawDistOn = v; }, fx.drawDist, 20.f, 300.f, 10.f, "0", [](float v) { fx.drawDist = v; });
     caption("Resolution");
     segments(kResNames, fx.resIndex, [](int i) { fx.resIndex = i; }, 1.f);
+    toggle("Adaptive resolution", fx.adaptive, [](bool v) { fx.adaptive = v; });
+    if (fx.adaptive) {
+        caption("Lowers the resolution (down to 50%) when the FPS stays under your target, and raises it again when there is room. Pick the FPS the game really runs at.", 3);
+        segments(kTargetNames, fx.adaptTarget, [](int i) { fx.adaptTarget = i; }, 1.f);
+    }
     toggle("Custom screen size", fx.customRes, [](bool v) {
         fx.customRes = v;
         if (v) {  // start from the size the game renders at now
@@ -844,22 +866,52 @@ void drawEye() {
     eyeGlyph(cxp, cyp, ES * 0.74f, withA(acc, a));
 }
 
-void drawFps() {
-    if (!ui.showFps) return;
+// the last frame times as thin bars: green up to 18 ms, yellow up to 34 ms, red above
+void drawGraph(float x, float y, float w, float h) {
     float s = S;
-    int n = (int)std::lround(gFps);
-    Col col = n >= 50 ? Col(0.35f, 0.84f, 0.48f, 1.f) : (n >= 30 ? Col(0.95f, 0.75f, 0.20f, 1.f) : Col(1.f, 0.36f, 0.36f, 1.f));
-    rfill(ui.fpsX, ui.fpsY, fpsW, fpsH, fpsH * 0.5f, withA(bgCol(), 0.82f));
-    rring(ui.fpsX, ui.fpsY, fpsW, fpsH, fpsH * 0.5f, 1.f * s, withA(accentNow(), 0.7f));
-    float size = fsz(11.5f);
-    std::string num = std::to_string(n), rest = " FPS";
-    float w1 = gFont->CalcTextSizeA(size, FLT_MAX, 0, num.c_str()).x, w2 = gFont->CalcTextSizeA(size, FLT_MAX, 0, rest.c_str()).x;
-    float x0 = ui.fpsX + (fpsW - (w1 + w2)) * 0.5f;
-    float th = gFont->CalcTextSizeA(size, FLT_MAX, 0, num.c_str()).y;
-    float y0 = ui.fpsY + (fpsH - th) * 0.5f;
-    D->AddText(gFont, size, ImVec2(x0, y0), U(col), num.c_str());
-    D->AddText(gFont, size, ImVec2(x0 + size * 0.04f, y0), U(col), num.c_str());
-    D->AddText(gFont, size, ImVec2(x0 + w1, y0), U(White), rest.c_str());
+    rfill(x, y, w, h, 8.f * s, withA(bgCol(), 0.82f));
+    rring(x, y, w, h, 8.f * s, 1.f * s, withA(accentNow(), 0.7f));
+    float px = x + 6.f * s, pw2 = w - 12.f * s, top = y + 14.f * s, ph2 = h - 14.f * s - 4.f * s;
+    const float maxMs = 50.f;
+    // guide lines at 16.7 ms (60 FPS) and 33.3 ms (30 FPS)
+    fill(px, top + ph2 * (1.f - 16.7f / maxMs), pw2, 1.f, Col(1.f, 1.f, 1.f, 0.12f));
+    fill(px, top + ph2 * (1.f - 33.3f / maxMs), pw2, 1.f, Col(1.f, 1.f, 1.f, 0.12f));
+    float bw = pw2 / kGraphN;
+    float sum = 0.f, worst = 0.f;
+    for (int i = 0; i < kGraphN; i++) {
+        float ms = gFrameMs[(gFramePos + i) % kGraphN];
+        sum += ms;
+        worst = std::max(worst, ms);
+        if (ms <= 0.f) continue;
+        float bh = ph2 * clampf(ms / maxMs, 0.02f, 1.f);
+        Col c = ms <= 18.f ? Col(0.35f, 0.84f, 0.48f, 1.f) : (ms <= 34.f ? Col(0.95f, 0.75f, 0.20f, 1.f) : Col(1.f, 0.36f, 0.36f, 1.f));
+        fill(px + i * bw, top + ph2 - bh, std::max(1.f, bw - 0.5f), bh, c);
+    }
+    char t[48];
+    snprintf(t, sizeof(t), "%.1f ms   worst %.0f", sum / kGraphN, worst);
+    text(x + 6.f * s, y + 1.f * s, w - 12.f * s, 14.f * s, t, fsz(8.5f, 7.f), Col(0.70f, 0.74f, 0.82f, 1.f), Left);
+}
+
+void drawFps() {
+    float s = S;
+    float y = ui.fpsY;
+    if (ui.showFps) {
+        int n = (int)std::lround(gFps);
+        Col col = n >= 50 ? Col(0.35f, 0.84f, 0.48f, 1.f) : (n >= 30 ? Col(0.95f, 0.75f, 0.20f, 1.f) : Col(1.f, 0.36f, 0.36f, 1.f));
+        rfill(ui.fpsX, y, fpsW, fpsH, fpsH * 0.5f, withA(bgCol(), 0.82f));
+        rring(ui.fpsX, y, fpsW, fpsH, fpsH * 0.5f, 1.f * s, withA(accentNow(), 0.7f));
+        float size = fsz(11.5f);
+        std::string num = std::to_string(n), rest = " FPS";
+        float w1 = gFont->CalcTextSizeA(size, FLT_MAX, 0, num.c_str()).x, w2 = gFont->CalcTextSizeA(size, FLT_MAX, 0, rest.c_str()).x;
+        float x0 = ui.fpsX + (fpsW - (w1 + w2)) * 0.5f;
+        float th = gFont->CalcTextSizeA(size, FLT_MAX, 0, num.c_str()).y;
+        float y0 = y + (fpsH - th) * 0.5f;
+        D->AddText(gFont, size, ImVec2(x0, y0), U(col), num.c_str());
+        D->AddText(gFont, size, ImVec2(x0 + size * 0.04f, y0), U(col), num.c_str());
+        D->AddText(gFont, size, ImVec2(x0 + w1, y0), U(White), rest.c_str());
+        y += fpsH + 4.f * s;
+    }
+    if (ui.showGraph) drawGraph(ui.fpsX, y, graphW, graphH);
 }
 
 // ================================================================ the finger
@@ -932,7 +984,7 @@ void pointerDown(float x, float y) {
         return;
     }
     if (inside(x, y, ui.eyeX, ui.eyeY, ES, ES)) gMode = ModeEye;
-    else if (ui.showFps && inside(x, y, ui.fpsX, ui.fpsY, fpsW, fpsH)) gMode = ModeFps;
+    else if ((ui.showFps || ui.showGraph) && inside(x, y, ui.fpsX, ui.fpsY, fpsBoxW, fpsBoxH)) gMode = ModeFps;
 }
 
 void pointerMove(float x, float y) {
@@ -1062,6 +1114,9 @@ void menuFrame(int w, int h) {
     io.DeltaTime = dt;
     gTime += dt;
     gFps = gFps <= 0.f ? 1.f / dt : lerpf(gFps, 1.f / dt, 0.1f);
+    setMeasuredFps(gFps);
+    gFrameMs[gFramePos] = dt * 1000.f;
+    gFramePos = (gFramePos + 1) % kGraphN;
 
     W = (float)w;
     H = (float)h;

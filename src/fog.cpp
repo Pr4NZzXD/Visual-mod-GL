@@ -136,7 +136,8 @@ void tick(const FxSettings& s) {
     gWrote = read();  // what the engine really stored, so rounding never looks like "the game changed it"
 }
 
-void onSceneLoaded() { gSaved = false; }
+// nothing to do: a scene that resets the fog is noticed in tick() (the values differ from what was written there)
+void onSceneLoaded() {}
 
 }  // namespace fog
 }  // namespace vm

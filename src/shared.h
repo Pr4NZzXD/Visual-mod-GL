@@ -33,6 +33,11 @@ struct FxSettings {
     bool chromaOn = false;    float chroma = 0.3f;           // 0 .. 1
     bool lensOn = false;      float lens = 20.f;             // -100 .. 100
 
+    // ---- dark scenes
+    bool ambientOn = false;   float ambient = 30.f;          // 0 .. 100 % flat ambient light
+    bool lightBoostOn = false; float lightBoost = 1.5f;      // 1 .. 3 times the intensity of every light
+    bool fovOn = false;       float fov = 70.f;              // 40 .. 110 degrees
+
     // ---- fog: 0 = the game's own, 1 = none, 2 = custom
     int fogMode = 0;
     float fogR = 0.60f, fogG = 0.60f, fogB = 0.65f;
@@ -46,6 +51,8 @@ struct FxSettings {
     bool customRes = false;   int customW = 0, customH = 0;  // 0 = not set yet
     bool squashOn = false;    float squash = 0.8f;           // 0.3 .. 3
     int fpsIndex = 0;                                        // index into the FPS list
+    bool adaptive = false;                                   // the render size follows the FPS
+    int adaptTarget = 0;                                     // 0 = 30, 1 = 45, 2 = 60 FPS
     bool autoClean = false;
     int cleanReq = 0;                                        // raised by the "Clean memory now" button
 };
@@ -65,6 +72,7 @@ struct UiSettings {
     int tab = 0;          // 0 General, 1 Color, 2 Effects, 3 Advanced, 4 Performance, 5 Settings
     int colorSub = 0;     // 0 Basic, 1 Temperature, 2 Tint, 3 RGB
     bool showFps = false;
+    bool showGraph = false;
     bool lock = false;
     bool rainbow = false;
     bool rounded = true;
@@ -100,6 +108,10 @@ void postToast(const char* text);  // a short message in the footer of the panel
 // touch: written by the main thread, read by the render thread
 void setTouch(const Touch& t);
 Touch getTouch();
+
+// frames per second as the render thread sees them (the adaptive resolution reads it)
+void setMeasuredFps(float fps);
+float measuredFps();
 
 // true while a finger that started on the menu is down: the game ignores that touch
 extern std::atomic<bool> gBlockTouch;

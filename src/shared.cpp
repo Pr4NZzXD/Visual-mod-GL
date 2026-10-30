@@ -18,6 +18,9 @@ static MainStatus gStatus;
 static Touch gTouch;
 
 std::atomic<bool> gBlockTouch{false};
+static std::atomic<float> gMeasuredFps{0.f};
+void setMeasuredFps(float fps) { gMeasuredFps.store(fps); }
+float measuredFps() { return gMeasuredFps.load(); }
 
 void publishFx(const FxSettings& f) {
     std::lock_guard<std::mutex> l(gMutex);
@@ -162,6 +165,7 @@ void fields(UiSettings& ui, FxSettings& fx, std::vector<Field>& out) {
     FI("tab", ui.tab, 0, 5);
     FI("colorSub", ui.colorSub, 0, 3);
     FB("showFps", ui.showFps);
+    FB("showGraph", ui.showGraph);
     FF("fpsX", ui.fpsX, -1.f, 20000.f);
     FF("fpsY", ui.fpsY, -1.f, 20000.f);
     FF("eyeX", ui.eyeX, -1.f, 20000.f);
@@ -190,6 +194,10 @@ void fields(UiSettings& ui, FxSettings& fx, std::vector<Field>& out) {
     FF("visGrainSz", fx.grainSize, 0.3f, 3.f);
     FB("visChrOn", fx.chromaOn);       FF("visChr", fx.chroma, 0.f, 1.f);
     FB("visLensOn", fx.lensOn);        FF("visLens", fx.lens, -100.f, 100.f);
+    // ---- dark scenes
+    FB("ambOn", fx.ambientOn);         FF("amb", fx.ambient, 0.f, 100.f);
+    FB("lightOn", fx.lightBoostOn);    FF("lightMul", fx.lightBoost, 1.f, 3.f);
+    FB("fovOn", fx.fovOn);             FF("fov", fx.fov, 40.f, 110.f);
     // ---- fog
     FI("fogMode", fx.fogMode, 0, 2);
     FF("fogR", fx.fogR, 0.f, 1.f);
@@ -209,6 +217,8 @@ void fields(UiSettings& ui, FxSettings& fx, std::vector<Field>& out) {
     FI("perfH", fx.customH, 0, 4096);
     FB("perfSquash", fx.squashOn);     FF("perfSquashV", fx.squash, 0.3f, 3.f);
     FI("perfFps", fx.fpsIndex, 0, 4);
+    FB("perfAdaptive", fx.adaptive);
+    FI("perfAdaptT", fx.adaptTarget, 0, 2);
     FB("perfAuto", fx.autoClean);
 #undef FB
 #undef FF

@@ -12,6 +12,7 @@
 #include "fog.h"
 #include "il2cpp.h"
 #include "log.h"
+#include "scene.h"
 
 // The performance options, ported from the C# mod. Everything is reversible: the original value of every setting,
 // material and component that is changed is remembered and put back when the option is switched off.
@@ -312,9 +313,61 @@ struct Res {
 int screenW() { return callInt(G.mScreenW, nullptr, nullptr, 0); }
 int screenH() { return callInt(G.mScreenH, nullptr, nullptr, 0); }
 
+// ---------------------------------------------------------------- adaptive resolution
+// The render size follows the FPS: down one step when the frame rate stays under the target, back up (slowly,
+// and slower each time it did not hold) when there is room. Never below 50 %.
+const int kAdTargets[] = {30, 45, 60};
+struct Adaptive {
+    int idx = 0;
+    int low = 0, high = 0;
+    double next = 0, skipUntil = 0, lastUp = -1000, holdUp = 12;
+    bool wasOn = false;
+} Ad;
+bool gAdaptiveOn = false;
+
+void adaptiveTick(const FxSettings& s, double now) {
+    gAdaptiveOn = s.adaptive && !s.customRes;
+    if (!gAdaptiveOn) {
+        if (Ad.wasOn) {
+            Ad = Adaptive();
+            Ad.wasOn = false;
+        }
+        return;
+    }
+    Ad.wasOn = true;
+    if (now < 8.0 || now < Ad.skipUntil || now < Ad.next) return;
+    Ad.next = now + 1.0;
+    float fps = measuredFps();
+    if (fps <= 1.f) return;
+    float target = (float)kAdTargets[std::min(2, std::max(0, s.adaptTarget))];
+    if (fps < target * 0.88f) {
+        Ad.high = 0;
+        if (++Ad.low >= 3) {
+            Ad.low = 0;
+            if (Ad.idx < 3) {
+                Ad.idx++;
+                if (now - Ad.lastUp < 20.0) Ad.holdUp = std::min(96.0, Ad.holdUp * 2.0);  // it did not hold: wait longer next time
+                Ad.skipUntil = now + 3.0;
+                logf("perf: adaptive resolution down to %d%% (%.0f FPS, wanted %.0f)", (int)std::lround(kResSteps[Ad.idx] * 100), fps, target);
+            }
+        }
+    } else if (fps >= target * 0.97f && Ad.idx > 0) {
+        Ad.low = 0;
+        if (++Ad.high >= (int)Ad.holdUp) {
+            Ad.high = 0;
+            Ad.idx--;
+            Ad.lastUp = now;
+            Ad.skipUntil = now + 3.0;
+            logf("perf: adaptive resolution up to %d%% (%.0f FPS)", (int)std::lround(kResSteps[Ad.idx] * 100), fps);
+        }
+    } else {
+        Ad.low = 0;
+    }
+}
+
 void resolutionTick(const FxSettings& s, double now) {
     if (now < 8.0) return;  // not while the game is still starting
-    int want = std::min(4, std::max(0, s.resIndex));
+    int want = gAdaptiveOn ? Ad.idx : std::min(4, std::max(0, s.resIndex));
     if (!R.active && !s.customRes && want == 0) return;
     if (!G.screenSetRes) return;
 
@@ -896,7 +949,9 @@ void onSceneLoaded(double now) {
     gLightNext = now + 0.3;
     gCamNext = now + 1.0;
     Q.next = 0;
+    Ad.skipUntil = now + 4.0;  // the frame rate of a loading scene says nothing
     fog::onSceneLoaded();
+    scene::onSceneLoaded();
 }
 
 std::string buildStatus() {
@@ -910,8 +965,10 @@ std::string buildStatus() {
 std::string resolutionInfo() {
     std::string now = R.active ? std::to_string(R.appW) + "x" + std::to_string(R.appH) : "the screen's own size";
     int w = R.origW > 0 ? R.origW : screenW(), h = R.origW > 0 ? R.origH : screenH();
-    return "Now: " + now + " (screen " + std::to_string(w) + "x" + std::to_string(h) +
-           "). A size with another shape than the screen is stretched to fit it.";
+    std::string r = "Now: " + now + " (screen " + std::to_string(w) + "x" + std::to_string(h) +
+                    "). A size with another shape than the screen is stretched to fit it.";
+    if (gAdaptiveOn) r = "Adaptive: " + std::to_string((int)std::lround(kResSteps[Ad.idx] * 100)) + "% of the screen. " + r;
+    return r;
 }
 
 double gStatusNext = 0;
@@ -943,6 +1000,7 @@ void tick(const FxSettings& s) {
     }
 
     qualityTick(s, now);
+    adaptiveTick(s, now);
     resolutionTick(s, now);
     squashTick(s, now);
     fpsTick(s, now);
