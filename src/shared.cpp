@@ -46,6 +46,11 @@ void setVisualStatus(const std::string& s) {
     gStatus.visual = s;
 }
 
+void setSceneStatus(const std::string& s) {
+    std::lock_guard<std::mutex> l(gMutex);
+    gStatus.scene = s;
+}
+
 void setPerfStatus(const std::string& perf, const std::string& resolution, int screenW, int screenH) {
     std::lock_guard<std::mutex> l(gMutex);
     gStatus.perf = perf;
@@ -152,9 +157,9 @@ void fields(UiSettings& ui, FxSettings& fx, std::vector<Field>& out) {
 #define FI(key, v, lo, hi) out.push_back({key, kInt, &(v), lo, hi})
     // ---- menu
     FF("scale", ui.scale, 0.6f, 1.8f);
-    FF("panelAlpha", ui.panelAlpha, 0.3f, 1.f);
+    FF("panelAlpha", ui.panelAlpha, 0.f, 1.f);
     FF("iconSize", ui.iconSize, 0.6f, 2.f);
-    FF("iconAlpha", ui.iconAlpha, 0.2f, 1.f);
+    FF("iconAlpha", ui.iconAlpha, 0.f, 1.f);
     FB("rainbow", ui.rainbow);
     FF("rainbowSpeed", ui.rainbowSpeed, 0.1f, 3.f);
     FB("rounded", ui.rounded);

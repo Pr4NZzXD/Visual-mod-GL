@@ -107,7 +107,8 @@ Col accentNow() {
     float x = gTime * ui.rainbowSpeed * 0.25f;
     return hueRgb(x - std::floor(x));
 }
-Col cardCol() { return shade(bgCol(), 0.08f); }
+// the cards follow the menu opacity too, so at 0 the menu is only its text and controls over the game
+Col cardCol() { return withA(shade(bgCol(), 0.08f), ui.panelAlpha); }
 
 int indexIn(const Palette& p, float r, float g, float b) {
     for (size_t i = 0; i < p.size(); i++)
@@ -691,7 +692,8 @@ void pageEffects() {
     fxRow("Brightness", fx.ambientOn, [](bool v) { fx.ambientOn = v; }, fx.ambient, 0.f, 100.f, 1.f, "0", [](float v) { fx.ambient = v; });
     fxRow("Light boost", fx.lightBoostOn, [](bool v) { fx.lightBoostOn = v; }, fx.lightBoost, 1.f, 3.f, 0.1f, "0.0", [](float v) { fx.lightBoost = v; });
     fxRow("Field of view", fx.fovOn, [](bool v) { fx.fovOn = v; }, fx.fov, 40.f, 110.f, 1.f, "0", [](float v) { fx.fov = v; });
-    caption("Brightness adds flat light to shadowed areas; baked shadows stay. Light boost multiplies every light. These stay when you pick a preset.", 3);
+    caption("Brightness: adds flat light, so shadowed corners are less black.\nLight boost: makes the game's real-time lights stronger (flashlight, lamps). Light that is baked into the map does not change; for that, use Exposure or Gamma above.\nThese stay when you pick a preset.", 6);
+    if (!st.scene.empty()) caption(st.scene, 1 + (int)std::count(st.scene.begin(), st.scene.end(), '\n'));
 }
 
 void pageAdvanced() {
@@ -769,9 +771,10 @@ void resetLook() {
 
 void pageUi() {
     slider("Menu size", gScaleDraft, 0.6f, 1.8f, 0.05f, "0.00", [](float v) { gScaleDraft = v; }, [] { ui.scale = gScaleDraft; });
-    slider("Menu opacity", ui.panelAlpha, 0.3f, 1.f, 0.02f, "0.00", [](float v) { ui.panelAlpha = v; });
+    slider("Menu opacity", ui.panelAlpha, 0.f, 1.f, 0.02f, "0.00", [](float v) { ui.panelAlpha = v; });
     slider("Icon size", ui.iconSize, 0.6f, 2.f, 0.05f, "0.00", [](float v) { ui.iconSize = v; });
-    slider("Icon opacity", ui.iconAlpha, 0.2f, 1.f, 0.05f, "0.00", [](float v) { ui.iconAlpha = v; });
+    slider("Icon opacity", ui.iconAlpha, 0.f, 1.f, 0.05f, "0.00", [](float v) { ui.iconAlpha = v; });
+    if (ui.iconAlpha < 0.05f) caption("The icon is invisible now, but it still opens the menu where it was. To get it back, delete visualmobile.cfg.", 3);
     section("COLOURS");
     swatches(kAccents, ui.rainbow ? -1 : indexIn(kAccents, ui.accent[0], ui.accent[1], ui.accent[2]), [](int i) {
         for (int k = 0; k < 3; k++) ui.accent[k] = kAccents[i][k];

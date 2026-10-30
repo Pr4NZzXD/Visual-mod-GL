@@ -66,29 +66,56 @@ bool onMainThread() {
     return false;
 }
 
-// UnityEngine.Time.get_deltaTime is called many times per frame from the main thread: a safe place to run
-// code that may call into Unity.
+// The mod's own work (reading the finger, applying effects) has to run on the game's main thread. There is no
+// "update" of our own, so it rides on engine getters the game calls every frame. One getter is not enough: a screen
+// without gameplay scripts (the main menu, a pause menu with timeScale 0) may never ask for Time.deltaTime, and
+// then the menu would not see the finger. So three are hooked; whichever is called first does the work.
+//   Time.deltaTime          - gameplay scripts
+//   Time.unscaledDeltaTime  - UI that keeps moving while the game is paused
+//   Input.touchCount        - uGUI polls it every frame in every scene that has an EventSystem
 float (*gOrigDt)(const void*) = nullptr;
+float (*gOrigUDt)(const void*) = nullptr;
+int (*gOrigTouchCount)(const void*) = nullptr;
 thread_local bool gInTick = false;
+std::atomic<int> gTickSeen{0};
 
+void runTick(int source, const char* name) {
+    if (gInTick || !onMainThread()) return;
+    int64_t now = nowMs();
+    if (now - gLastTickMs.load() < 4) return;
+    gLastTickMs.store(now);
+    if (!(gTickSeen.fetch_or(1 << source) & (1 << source))) logf("tick: first call from %s", name);
+    gInTick = true;
+    fx::pollTouch();
+    fx::tick();
+    static FxSettings cur;
+    static unsigned curVersion = 0;
+    takeFx(cur, curVersion);
+    fog::tick(cur);
+    perf::tick(cur);
+    scene::tick(cur);
+    gInTick = false;
+}
+
+// (a hook is live a moment before its "original" pointer is stored: guard against that gap)
 float hookDeltaTime(const void* mi) {
+    if (!gOrigDt) return 0.f;
     float r = gOrigDt(mi);
-    if (!gInTick && onMainThread()) {
-        int64_t now = nowMs();
-        if (now - gLastTickMs.load() >= 4) {
-            gLastTickMs.store(now);
-            gInTick = true;
-            fx::pollTouch();
-            fx::tick();
-            static FxSettings cur;
-            static unsigned curVersion = 0;
-            takeFx(cur, curVersion);
-            fog::tick(cur);
-            perf::tick(cur);
-            scene::tick(cur);
-            gInTick = false;
-        }
-    }
+    runTick(0, "Time.deltaTime");
+    return r;
+}
+
+float hookUnscaledDeltaTime(const void* mi) {
+    if (!gOrigUDt) return 0.f;
+    float r = gOrigUDt(mi);
+    runTick(1, "Time.unscaledDeltaTime");
+    return r;
+}
+
+int hookTouchCount(const void* mi) {
+    if (!gOrigTouchCount) return 0;
+    int r = gOrigTouchCount(mi);
+    runTick(2, "Input.touchCount");
     return r;
 }
 
@@ -201,6 +228,13 @@ void* bootstrap(void*) {
         logf("without this hook nothing can run, giving up");
         return nullptr;
     }
+
+    // 1b. two more per-frame getters, for screens where the first one is never called (see above); optional
+    const MethodInfo* mUdt = il2::findMethod(kTime, "get_unscaledDeltaTime", 0);
+    if (mUdt) installHook(il2::fnPtr(mUdt), (void*)hookUnscaledDeltaTime, (void**)&gOrigUDt, "Time.get_unscaledDeltaTime");
+    Il2CppClass* kInput = il2::findClass("UnityEngine", "Input");
+    const MethodInfo* mTc = il2::findMethod(kInput, "get_touchCount", 0);
+    if (mTc) installHook(il2::fnPtr(mTc), (void*)hookTouchCount, (void**)&gOrigTouchCount, "Input.get_touchCount");
 
     // 2. the draw hook on the render thread
     void* egl = dlopen("libEGL.so", RTLD_NOW);

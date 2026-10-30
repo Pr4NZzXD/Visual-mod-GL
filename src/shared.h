@@ -7,7 +7,7 @@
 
 namespace vm {
 
-constexpr const char* kVersion = "1.1.0";
+constexpr const char* kVersion = "1.2.0";
 
 // Everything the main thread needs from the menu: screen effects, fog and performance options.
 // The names and ranges follow the C# mod (VisualMobile for MelonLoader).
@@ -62,6 +62,7 @@ struct MainStatus {
     std::string visual = "Off";
     std::string perf;
     std::string resolution;
+    std::string scene;              // what the dark-scene options found (lights, cameras)
     int screenW = 0, screenH = 0;   // the size the game renders at now
     int toastSeq = 0;
     std::string toast;
@@ -101,6 +102,7 @@ FxSettings currentFx();
 
 // status: written by the main thread, read by the menu
 void setVisualStatus(const std::string& s);
+void setSceneStatus(const std::string& s);
 void setPerfStatus(const std::string& perf, const std::string& resolution, int screenW, int screenH);
 MainStatus currentStatus();
 void postToast(const char* text);  // a short message in the footer of the panel

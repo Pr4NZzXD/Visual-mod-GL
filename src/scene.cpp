@@ -268,13 +268,39 @@ void fovTick(const FxSettings& s, int64_t now) {
 
 }  // namespace
 
+int64_t gStatusNext = 0;
+bool gStatusEmpty = true;
+
+// one short line per switched-on option: it says whether the option found anything to work on
+void publishStatus(const FxSettings& s, int64_t now) {
+    if (now < gStatusNext) return;
+    gStatusNext = now + 500;
+    std::string t;
+    if (s.ambientOn) t += F.ambOk ? "Brightness: flat light is on.\n" : "Brightness: not available in this game.\n";
+    if (s.lightBoostOn) {
+        if (!F.lightOk) t += "Light boost: not available in this game.\n";
+        else if (gLights.empty()) t += "Light boost: no lights found in this scene (nothing to boost).\n";
+        else t += "Light boost: " + std::to_string(gLights.size()) + " lights found, x" + std::to_string((int)(s.lightBoost * 10 + 0.5f) / 10) +
+                  "." + std::to_string((int)(s.lightBoost * 10 + 0.5f) % 10) + ".\n";
+    }
+    if (s.fovOn) t += F.fovOk ? "Field of view: " + std::to_string(gCams.size()) + " cameras.\n" : "Field of view: not available.\n";
+    if (!t.empty()) t.pop_back();
+    if (t.empty() && gStatusEmpty) return;
+    gStatusEmpty = t.empty();
+    setSceneStatus(t);
+}
+
 void tick(const FxSettings& s) {
-    if (!s.ambientOn && !s.lightBoostOn && !s.fovOn && !Ab.saved && gLights.empty() && gCams.empty()) return;
+    if (!s.ambientOn && !s.lightBoostOn && !s.fovOn && !Ab.saved && gLights.empty() && gCams.empty()) {
+        publishStatus(s, nowMs());
+        return;
+    }
     resolve();
     int64_t now = nowMs();
     ambientTick(s, now);
     lightTick(s, now);
     fovTick(s, now);
+    publishStatus(s, now);
 }
 
 void onSceneLoaded() {
