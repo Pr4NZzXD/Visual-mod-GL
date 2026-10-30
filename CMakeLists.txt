@@ -24,6 +24,7 @@ add_library(visualmobile SHARED
     src/fog.cpp
     src/perf.cpp
     src/scene.cpp
+    src/cheat.cpp
     src/menu.cpp
     ${IMGUI_DIR}/imgui.cpp
     ${IMGUI_DIR}/imgui_draw.cpp

@@ -41,6 +41,14 @@ Tap the little eye on the screen to open the menu. Drag the eye, or the top bar 
 - FPS limit
 - Clean memory
 
+**Cheat (new tab)**
+- Player: god mode, speed (1-6x), no clip, no fall damage, no cracking floor, infinite ammo, infinite spray, no trap
+- Enemies, every enemy with its own switches (only what the game has for it is shown): freeze for all seven; blind for Granny, Grandpa and the Little One; deaf for Granny and Grandpa; kill (Mom Spider is stunned and the Little One knocked out, as the game's own weapons do)
+- Items: spawn any of the 55 items, auto grab (presses the interact button while an item is at the crosshair), long reach (item, door and trap-removal ray, 2-40 m)
+- ESP for enemies and items: box outline, name, distance and a maximum distance
+
+Nothing in the Cheat tab uses a fixed address. Classes, fields and methods are found by name when the game starts (`src/cheat.cpp`), and every field is checked for the expected type before it is written, so a game update that renames something turns off only that feature and says so in the log and at the top of the tab. The names were checked against the dump of Granny: Legacy (Unity 2022.3.62f2); `tools/dump_metadata.py` makes the same list from a `global-metadata.dat` to check them again after an update.
+
 **Menu**
 - Floating eye icon
 - FPS counter and frame graph you can move around
