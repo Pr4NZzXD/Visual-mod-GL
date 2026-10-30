@@ -37,6 +37,14 @@ Everything the mod changes is remembered and put back when you switch the option
 - 8 colours and a thickness slider for each; visible through walls or only where you can see them
 - The game's own outline component draws it; the mod only turns it on, so it looks like the game's own item outlines
 
+**Cheat** (its own tab)
+- Player: god mode, speed (1-6x), no clip, no fall damage, no cracking floor, infinite ammo, infinite spray, no trap
+- Enemies, every enemy with its own switches (only what the game has for it is shown): freeze for all seven; blind for Granny, Grandpa and the Little One; deaf for Granny and Grandpa; kill (Mom Spider is stunned and the Little One knocked out, as the game's own weapons do)
+- Items: spawn any of the 55 items, auto grab (presses the interact button the moment the pick-up prompt shows), long reach (item, door and trap-removal ray, 2-40 m)
+- ESP: the outline ESP above, with its switches on the ESP page of this tab
+
+Nothing in the Cheat tab uses a fixed address. Classes, fields and methods are found by name when the game starts (`src/cheat.cpp`), and every field is checked for the expected type before it is written, so a game update that renames something turns off only that feature and says so in the log and at the top of the tab. The names were checked against the dump of Granny: Legacy (Unity 2022.3.62f2); `tools/dump_metadata.py` makes the same list from a `global-metadata.dat` to check them again after an update.
+
 **Settings**: menu size, menu opacity and icon opacity (both down to 0%), icon size, accent and background colours, rainbow accent, rounded corners, lock the position
 
 Text in the menu never gets smaller than a readable size, even when the menu is made small, and it gets a soft shadow when the menu is see-through.
