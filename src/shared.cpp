@@ -199,6 +199,13 @@ void fields(UiSettings& ui, FxSettings& fx, std::vector<Field>& out) {
     FF("visGrainSz", fx.grainSize, 0.3f, 3.f);
     FB("visChrOn", fx.chromaOn);       FF("visChr", fx.chroma, 0.f, 1.f);
     FB("visLensOn", fx.lensOn);        FF("visLens", fx.lens, -100.f, 100.f);
+    FB("visAoOn", fx.aoOn);            FF("visAo", fx.aoIntensity, 0.f, 4.f);
+    FF("visAoRad", fx.aoRadius, 0.05f, 3.f);
+    FI("visAoQ", fx.aoQuality, 0, 2);
+    FB("visDofOn", fx.dofOn);          FF("visDofFocus", fx.dofFocus, 0.5f, 50.f);
+    FF("visDofAp", fx.dofAperture, 1.f, 32.f);
+    FF("visDofLen", fx.dofLength, 10.f, 300.f);
+    FI("visDofQ", fx.dofQuality, 0, 2);
     // ---- dark scenes
     FB("ambOn", fx.ambientOn);         FF("amb", fx.ambient, 0.f, 100.f);
     FB("lightOn", fx.lightBoostOn);    FF("lightMul", fx.lightBoost, 1.f, 3.f);
@@ -211,6 +218,9 @@ void fields(UiSettings& ui, FxSettings& fx, std::vector<Field>& out) {
     FF("fogThick", fx.fogThick, 0.f, 100.f);
     // ---- performance
     FI("perfLevel", fx.perfLevel, 0, 2);
+    FI("aaMode", fx.aaMode, 0, 4);
+    FI("anisoMode", fx.anisoMode, 0, 2);
+    FB("lodOn", fx.lodOn);             FF("lodBias", fx.lodBias, 0.3f, 2.f);
     FB("perfNoTex", fx.noTextures);
     FB("perfParticles", fx.hideParticles);
     FB("perfPostFx", fx.noPostFx);

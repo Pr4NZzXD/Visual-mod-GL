@@ -301,6 +301,77 @@ void qualityTick(const FxSettings& s, double now) {
     setIf(G.qRaycast, ultra ? 4 : 16);
 }
 
+// ---------------------------------------------------------------- your own anti-aliasing, anisotropic and LOD bias
+// These win over the graphics level above. A value that is switched off goes back to what the game (or the level) had.
+struct Gfx {
+    bool saved = false, aaOn = false, anOn = false, lodOn = false;
+    int aa = 0, aniso = 0;
+    float lod = 1.f;
+    int lastAa = -1, lastAn = -1;
+    bool lastLodOn = false;
+    float lastLod = -1.f;
+    double next = 0;
+} Gx;
+
+void gfxTick(const FxSettings& s, double now) {
+    bool wantAa = s.aaMode > 0, wantAn = s.anisoMode > 0, wantLod = s.lodOn;
+    if (!Gx.saved && (wantAa || wantAn || wantLod)) {
+        // the game's own values (the ones the graphics level saved, if that is on)
+        Gx.aa = Q.saved ? Q.aa : (G.qAA.get ? G.qAA.get() : 0);
+        Gx.aniso = Q.saved ? Q.aniso : (G.qAniso.get ? G.qAniso.get() : 0);
+        Gx.lod = Q.saved ? Q.lod : (G.qLod.get ? G.qLod.get() : 1.f);
+        Gx.saved = true;
+        Gx.next = 0;
+        logf("perf: graphics options saved (aa %d, aniso %d, lod %.2f)", Gx.aa, Gx.aniso, Gx.lod);
+    }
+    // a value that was switched off: give it back (the graphics level writes its own again when it is on)
+    if (Gx.aaOn && !wantAa) {
+        if (s.perfLevel <= 0) restoreP(G.qAA, Gx.aa); else Q.level = -1;
+        Gx.aaOn = false;
+    }
+    if (Gx.anOn && !wantAn) {
+        if (s.perfLevel <= 0) restoreP(G.qAniso, Gx.aniso); else Q.level = -1;
+        Gx.anOn = false;
+    }
+    if (Gx.lodOn && !wantLod) {
+        if (s.perfLevel <= 0) restoreP(G.qLod, Gx.lod); else Q.level = -1;
+        Gx.lodOn = false;
+    }
+    if (!wantAa && !wantAn && !wantLod) {
+        if (Gx.saved) {
+            Gx.saved = false;
+            logf("perf: graphics options restored");
+        }
+        Gx.lastAa = Gx.lastAn = -1;
+        Gx.lastLodOn = false;
+        Gx.lastLod = -1.f;
+        return;
+    }
+
+    float lod = std::min(2.f, std::max(0.3f, s.lodBias));
+    bool changed = s.aaMode != Gx.lastAa || s.anisoMode != Gx.lastAn || s.lodOn != Gx.lastLodOn || std::fabs(lod - Gx.lastLod) > 0.001f;
+    if (!changed && now < Gx.next) return;  // written again about every 1.5 s: the game may reset them
+    Gx.lastAa = s.aaMode;
+    Gx.lastAn = s.anisoMode;
+    Gx.lastLodOn = s.lodOn;
+    Gx.lastLod = lod;
+    Gx.next = now + 1.5;
+
+    if (wantAa) {
+        static const int samples[5] = {0, 0, 2, 4, 8};
+        setIf(G.qAA, samples[std::min(4, s.aaMode)]);
+        Gx.aaOn = true;
+    }
+    if (wantAn) {
+        setIf(G.qAniso, s.anisoMode == 1 ? 0 : 1);  // Disable / Enable
+        Gx.anOn = true;
+    }
+    if (wantLod) {
+        if (G.qLod.ok() && std::fabs(G.qLod.get() - lod) > 0.001f) G.qLod.set(lod);
+        Gx.lodOn = true;
+    }
+}
+
 // ---------------------------------------------------------------- render resolution
 struct Res {
     bool active = false;  // a size other than the screen's own is applied
@@ -1000,6 +1071,7 @@ void tick(const FxSettings& s) {
     }
 
     qualityTick(s, now);
+    gfxTick(s, now);
     adaptiveTick(s, now);
     resolutionTick(s, now);
     squashTick(s, now);

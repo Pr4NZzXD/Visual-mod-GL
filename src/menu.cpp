@@ -78,7 +78,12 @@ const Palette kFogPalette = {{0.60f, 0.60f, 0.65f}, {1.00f, 1.00f, 1.00f}, {0.00
 const std::vector<std::string> kTabNames = {"General", "Color", "Effects", "Advanced", "Performance", "Settings"};
 const char* kPageTitles[] = {"GENERAL", "COLOR GRADING", "VISUAL EFFECTS", "ADVANCED", "PERFORMANCE", "MENU SETTINGS"};
 const std::vector<std::string> kColorSub = {"Basic", "Temperature", "Tint", "RGB"};
-const std::vector<std::string> kPresetNames = {"Default", "Warm", "Cold", "Vivid", "Cinematic", "Noir"};
+const std::vector<std::string> kPresetNames = {"Default", "Warm", "Cold", "Vivid", "Cinematic", "Noir",
+                                               "Night", "VHS", "Dreamy", "Horror", "Golden", "Sepia"};
+const std::vector<std::string> kAaNames = {"Game", "Off", "2x", "4x", "8x"};
+const std::vector<std::string> kAnisoNames = {"Game", "Off", "On"};
+const std::vector<std::string> kAoQuality = {"Low", "Medium", "High"};
+const std::vector<std::string> kDofQuality = {"Small", "Medium", "Large"};
 const std::vector<std::string> kFogModes = {"Game default", "No fog", "Custom"};
 const std::vector<std::string> kLevelNames = {"Off", "Low", "Ultra low"};
 const std::vector<std::string> kResNames = {"100%", "75%", "60%", "50%", "35%"};
@@ -459,13 +464,19 @@ void wideFx(const std::string& label, bool on, SetB setOn, float value, float mn
 }
 
 // preset thumbnails: a small landscape in the colours of each look (sky top, sky bottom, hills)
-const float kThumb[6][9] = {
+const float kThumb[12][9] = {
     {0.45f, 0.62f, 0.78f, 0.78f, 0.84f, 0.82f, 0.14f, 0.24f, 0.17f},  // Default
     {0.95f, 0.62f, 0.30f, 1.00f, 0.85f, 0.55f, 0.26f, 0.14f, 0.08f},  // Warm
     {0.18f, 0.33f, 0.60f, 0.55f, 0.76f, 0.90f, 0.07f, 0.12f, 0.20f},  // Cold
     {0.55f, 0.20f, 0.90f, 1.00f, 0.50f, 0.70f, 0.12f, 0.06f, 0.25f},  // Vivid
     {0.10f, 0.30f, 0.40f, 0.90f, 0.60f, 0.35f, 0.05f, 0.08f, 0.10f},  // Cinematic
     {0.20f, 0.20f, 0.21f, 0.70f, 0.70f, 0.72f, 0.04f, 0.04f, 0.05f},  // Noir
+    {0.02f, 0.12f, 0.04f, 0.10f, 0.55f, 0.20f, 0.02f, 0.18f, 0.06f},  // Night vision
+    {0.35f, 0.25f, 0.55f, 0.85f, 0.55f, 0.60f, 0.20f, 0.15f, 0.30f},  // VHS
+    {0.75f, 0.65f, 0.90f, 1.00f, 0.88f, 0.92f, 0.55f, 0.50f, 0.70f},  // Dreamy
+    {0.05f, 0.10f, 0.08f, 0.25f, 0.32f, 0.26f, 0.02f, 0.04f, 0.03f},  // Horror
+    {0.95f, 0.50f, 0.15f, 1.00f, 0.85f, 0.40f, 0.30f, 0.15f, 0.05f},  // Golden hour
+    {0.45f, 0.34f, 0.22f, 0.80f, 0.66f, 0.45f, 0.20f, 0.14f, 0.08f},  // Sepia
 };
 
 void drawThumb(int i, float x, float y, float w, float h) {
@@ -490,22 +501,27 @@ void drawThumb(int i, float x, float y, float w, float h) {
 }
 
 void presets(const std::vector<std::string>& names, int sel, Pick pick) {
-    float h = 78.f * S;
+    const int perRow = 6;
+    int total = (int)names.size();
+    int rows = (total + perRow - 1) / perRow;
+    float rowH = 78.f * S;
+    float h = rowH * rows;
     if (vis(h)) {
-        float y = cy;
-        int n = (int)names.size();
         float gap = 6.f * S;
-        float w = (cw - 12.f * S - (n - 1) * gap) / n;
+        float w = (cw - 12.f * S - (perRow - 1) * gap) / perRow;
         float th = 46.f * S;
-        float x = cx + 6.f * S;
-        for (int i = 0; i < n; i++) {
-            drawThumb(i, x, y + 3.f * S, w, th);
-            if (i == sel) rring(x - 2.f * S, y + 1.f * S, w + 4.f * S, th + 4.f * S, 5.f * S, 2.f * S, accentNow());
-            lbl(x - 4.f * S, y + th + 5.f * S, w + 8.f * S, 18.f * S, names[i], Center, i == sel ? 1.f : 0.75f);
-            Hit& t = newHit(x - 2.f * S, y, w + 4.f * S, th + 24.f * S);
-            t.pick = pick;
-            t.index = i;
-            x += w + gap;
+        for (int r = 0; r < rows; r++) {
+            float y = cy + r * rowH;
+            float x = cx + 6.f * S;
+            for (int i = r * perRow; i < total && i < (r + 1) * perRow; i++) {
+                drawThumb(i, x, y + 3.f * S, w, th);
+                if (i == sel) rring(x - 2.f * S, y + 1.f * S, w + 4.f * S, th + 4.f * S, 5.f * S, 2.f * S, accentNow());
+                lbl(x - 4.f * S, y + th + 5.f * S, w + 8.f * S, 18.f * S, names[i], Center, i == sel ? 1.f : 0.75f);
+                Hit& t = newHit(x - 2.f * S, y, w + 4.f * S, th + 24.f * S);
+                t.pick = pick;
+                t.index = i;
+                x += w + gap;
+            }
         }
     }
     cy += h;
@@ -590,6 +606,7 @@ void resetValues() {
     d.squash = fx.squash; d.fpsIndex = fx.fpsIndex; d.autoClean = fx.autoClean; d.cleanReq = fx.cleanReq;
     d.ambientOn = fx.ambientOn; d.ambient = fx.ambient; d.lightBoostOn = fx.lightBoostOn; d.lightBoost = fx.lightBoost;
     d.fovOn = fx.fovOn; d.fov = fx.fov; d.adaptive = fx.adaptive; d.adaptTarget = fx.adaptTarget;
+    d.aaMode = fx.aaMode; d.anisoMode = fx.anisoMode; d.lodOn = fx.lodOn; d.lodBias = fx.lodBias;
     fx = d;
 }
 
@@ -624,6 +641,56 @@ void applyPreset(int i) {
             fx.exposureOn = true; fx.exposure = -0.2f;
             fx.vignetteOn = true; fx.vignette = 0.5f;
             fx.grainOn = true; fx.grain = 0.3f;
+            break;
+        case 6:  // Night vision
+            fx.filterOn = true; fx.fr = 0.40f; fx.fg = 1.00f; fx.fb = 0.45f; fx.filterStrength = 1.f;
+            fx.satOn = true; fx.saturation = -60.f;
+            fx.exposureOn = true; fx.exposure = 0.8f;
+            fx.contrastOn = true; fx.contrast = 15.f;
+            fx.bloomOn = true; fx.bloom = 1.2f; fx.bloomThreshold = 0.6f;
+            fx.vignetteOn = true; fx.vignette = 0.55f; fx.vignetteSmooth = 0.5f;
+            fx.grainOn = true; fx.grain = 0.45f; fx.grainSize = 1.2f;
+            break;
+        case 7:  // VHS
+            fx.satOn = true; fx.saturation = 20.f;
+            fx.contrastOn = true; fx.contrast = -10.f;
+            fx.warmOn = true; fx.temperature = 8.f; fx.tint = 12.f;
+            fx.chromaOn = true; fx.chroma = 0.5f;
+            fx.lensOn = true; fx.lens = 10.f;
+            fx.grainOn = true; fx.grain = 0.35f;
+            fx.vignetteOn = true; fx.vignette = 0.3f;
+            break;
+        case 8:  // Dreamy
+            fx.bloomOn = true; fx.bloom = 3.f; fx.bloomThreshold = 0.5f;
+            fx.satOn = true; fx.saturation = 15.f;
+            fx.exposureOn = true; fx.exposure = 0.3f;
+            fx.contrastOn = true; fx.contrast = -12.f;
+            fx.warmOn = true; fx.temperature = 10.f; fx.tint = 8.f;
+            fx.dofOn = true; fx.dofFocus = 6.f; fx.dofAperture = 5.6f; fx.dofLength = 50.f; fx.dofQuality = 0;
+            break;
+        case 9:  // Horror
+            fx.satOn = true; fx.saturation = -45.f;
+            fx.contrastOn = true; fx.contrast = 25.f;
+            fx.exposureOn = true; fx.exposure = -0.5f;
+            fx.warmOn = true; fx.temperature = -12.f; fx.tint = -12.f;
+            fx.vignetteOn = true; fx.vignette = 0.65f; fx.vignetteSmooth = 0.4f;
+            fx.grainOn = true; fx.grain = 0.35f;
+            fx.aoOn = true; fx.aoIntensity = 1.6f; fx.aoRadius = 0.6f; fx.aoQuality = 1;
+            break;
+        case 10:  // Golden hour
+            fx.warmOn = true; fx.temperature = 45.f; fx.tint = 12.f;
+            fx.exposureOn = true; fx.exposure = 0.2f;
+            fx.satOn = true; fx.saturation = 20.f;
+            fx.contrastOn = true; fx.contrast = 10.f;
+            fx.bloomOn = true; fx.bloom = 1.2f; fx.bloomThreshold = 0.7f;
+            fx.vignetteOn = true; fx.vignette = 0.25f;
+            break;
+        case 11:  // Sepia
+            fx.filterOn = true; fx.fr = 1.00f; fx.fg = 0.82f; fx.fb = 0.55f; fx.filterStrength = 1.f;
+            fx.satOn = true; fx.saturation = -70.f;
+            fx.contrastOn = true; fx.contrast = 12.f;
+            fx.vignetteOn = true; fx.vignette = 0.4f;
+            fx.grainOn = true; fx.grain = 0.2f;
             break;
         default: break;
     }
@@ -703,6 +770,16 @@ void pageAdvanced() {
     section("LENS");
     fxRow("Chromatic", fx.chromaOn, [](bool v) { fx.chromaOn = v; }, fx.chroma, 0.f, 1.f, 0.05f, "0.00", [](float v) { fx.chroma = v; });
     fxRow("Distortion", fx.lensOn, [](bool v) { fx.lensOn = v; }, fx.lens, -100.f, 100.f, 5.f, "0", [](float v) { fx.lens = v; });
+    section("DEPTH");
+    fxRow("Ambient occlusion", fx.aoOn, [](bool v) { fx.aoOn = v; }, fx.aoIntensity, 0.f, 4.f, 0.1f, "0.0", [](float v) { fx.aoIntensity = v; });
+    slider("AO radius", fx.aoRadius, 0.05f, 3.f, 0.05f, "0.00", [](float v) { fx.aoRadius = v; });
+    segments(kAoQuality, fx.aoQuality, [](int i) { fx.aoQuality = i; }, 1.f);
+    caption("Ambient occlusion darkens corners and creases. Higher quality costs more FPS.", 2);
+    fxRow("Depth of field", fx.dofOn, [](bool v) { fx.dofOn = v; }, fx.dofFocus, 0.5f, 50.f, 0.5f, "0.0", [](float v) { fx.dofFocus = v; });
+    slider("Aperture", fx.dofAperture, 1.f, 32.f, 0.5f, "0.0", [](float v) { fx.dofAperture = v; });
+    slider("Focal length", fx.dofLength, 10.f, 300.f, 5.f, "0", [](float v) { fx.dofLength = v; });
+    segments(kDofQuality, fx.dofQuality, [](int i) { fx.dofQuality = i; }, 1.f);
+    caption("Depth of field: the slider is the focus distance in metres. What is farther or closer gets blurry. A lower aperture number blurs more. This costs FPS. Both effects only work if the game has them: the line on the General page says so.", 5);
     section("TUNING");
     slider("Bloom threshold", fx.bloomThreshold, 0.f, 2.f, 0.05f, "0.00", [](float v) { fx.bloomThreshold = v; });
     slider("Vignette softness", fx.vignetteSmooth, 0.05f, 1.f, 0.05f, "0.00", [](float v) { fx.vignetteSmooth = v; });
@@ -717,6 +794,14 @@ void pagePerf() {
     toggle("No post-processing", fx.noPostFx, [](bool v) { fx.noPostFx = v; });
     if (fx.noPostFx) caption("This also switches off the visual effects of this mod.", 2);
     toggle("No shadow", fx.noShadow, [](bool v) { fx.noShadow = v; });
+
+    section("QUALITY");
+    caption("Anti-aliasing");
+    segments(kAaNames, fx.aaMode, [](int i) { fx.aaMode = i; }, 1.f);
+    caption("Anisotropic filtering");
+    segments(kAnisoNames, fx.anisoMode, [](int i) { fx.anisoMode = i; }, 1.f);
+    fxRow("LOD bias", fx.lodOn, [](bool v) { fx.lodOn = v; }, fx.lodBias, 0.3f, 2.f, 0.1f, "0.0", [](float v) { fx.lodBias = v; });
+    caption("Off or a lower number saves GPU power. Without anti-aliasing the edges get jagged, without anisotropic filtering sloped floors get blurry. A LOD bias under 1 switches objects to simpler models sooner. \"Game\" leaves it as the game has it. These win over the graphics level above.", 6);
 
     section("DISTANCE AND RESOLUTION");
     fxRow("Draw distance", fx.drawDistOn, [](bool v) { fx.drawDistOn = v; }, fx.drawDist, 20.f, 300.f, 10.f, "0", [](float v) { fx.drawDist = v; });

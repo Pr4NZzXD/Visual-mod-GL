@@ -7,7 +7,7 @@
 
 namespace vm {
 
-constexpr const char* kVersion = "1.2.0";
+constexpr const char* kVersion = "1.3.0";
 
 // Everything the main thread needs from the menu: screen effects, fog and performance options.
 // The names and ranges follow the C# mod (VisualMobile for MelonLoader).
@@ -32,6 +32,13 @@ struct FxSettings {
                               float grainSize = 1.f;         // 0.3 .. 3
     bool chromaOn = false;    float chroma = 0.3f;           // 0 .. 1
     bool lensOn = false;      float lens = 20.f;             // -100 .. 100
+    bool aoOn = false;        float aoIntensity = 1.f;       // ambient occlusion, 0 .. 4
+                              float aoRadius = 0.5f;         // 0.05 .. 3
+                              int aoQuality = 1;             // 0 low, 1 medium, 2 high
+    bool dofOn = false;       float dofFocus = 6.f;          // depth of field: focus distance in metres, 0.5 .. 50
+                              float dofAperture = 5.6f;      // 1 .. 32 (lower = more blur)
+                              float dofLength = 50.f;        // focal length in mm, 10 .. 300
+                              int dofQuality = 1;            // 0 small, 1 medium, 2 large blur
 
     // ---- dark scenes
     bool ambientOn = false;   float ambient = 30.f;          // 0 .. 100 % flat ambient light
@@ -47,6 +54,9 @@ struct FxSettings {
     int perfLevel = 0;                                       // 0 off, 1 low, 2 ultra low
     bool noTextures = false, hideParticles = false, noPostFx = false, noShadow = false;
     bool drawDistOn = false;  float drawDist = 80.f;         // 20 .. 300
+    int aaMode = 0;                                          // anti-aliasing: 0 game, 1 off, 2 = 2x, 3 = 4x, 4 = 8x
+    int anisoMode = 0;                                       // anisotropic filtering: 0 game, 1 off, 2 on
+    bool lodOn = false;       float lodBias = 1.f;           // LOD bias, 0.3 .. 2
     int resIndex = 0;                                        // index into the percentage list
     bool customRes = false;   int customW = 0, customH = 0;  // 0 = not set yet
     bool squashOn = false;    float squash = 0.8f;           // 0.3 .. 3
