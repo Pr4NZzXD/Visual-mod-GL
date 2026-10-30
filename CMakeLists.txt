@@ -21,6 +21,8 @@ add_library(visualmobile SHARED
     src/il2cpp.cpp
     src/shared.cpp
     src/effects.cpp
+    src/fog.cpp
+    src/perf.cpp
     src/menu.cpp
     ${IMGUI_DIR}/imgui.cpp
     ${IMGUI_DIR}/imgui_draw.cpp
