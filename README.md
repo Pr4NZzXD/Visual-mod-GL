@@ -4,26 +4,52 @@ The same idea as VisualMobile, but as a plain `.so` library instead of a MelonLo
 
 Tap the little eye on the screen to open the menu. Drag the eye, or the top bar of the menu, to move it.
 
-**This is the first version.** It has less than the MelonLoader mod. More will come once this one is confirmed to run.
-
 ## Features
 
-**Colour**
-- Exposure
-- Saturation
-- Contrast
-- Hue
-- Warmth (cool to warm)
-- Tint (green to magenta)
+**Color**
+- Exposure, gamma
+- Saturation, contrast, hue
+- Warmth (cool to warm) and tint (green to magenta)
+- Colour filter with your own colour
+
+**Effects**
+- Bloom
+- Vignette
+- Film grain
+- Chromatic aberration
+- Lens distortion
+- Motion blur
+- Ambient occlusion (new)
+- Depth of field (new)
+
+**Presets**
+- Default, Warm, Cold, Vivid, Cinematic, Noir
+- New: Night vision, VHS, Dreamy, Horror, Golden hour, Sepia
+
+**Fog**
+- Game default, no fog, or your own colour and thickness
+
+**Dark scenes**
+- Brightness, light boost, field of view
+
+**Performance**
+- Low and ultra low graphics
+- No textures, no shadows, no post-processing, hide particles
+- Anti-aliasing, anisotropic filtering and LOD bias (new)
+- Draw distance
+- Resolution scale, adaptive resolution, custom screen size
+- FPS limit
+- Clean memory
 
 **Menu**
 - Floating eye icon
-- FPS counter you can move around
+- FPS counter and frame graph you can move around
 - Menu size, opacity and icon size
+- Your own colours, rainbow mode, rounded corners
 - Lock the position of the icon and the menu
 - Settings are saved
 
-**Not in this version yet:** presets, bloom, vignette, film grain, fog and the performance options.
+Ambient occlusion and depth of field cost some FPS, so use them with care on weak phones. They only work if the game has them. If it does not, the General page tells you.
 
 ## Get the library
 
@@ -57,4 +83,4 @@ Look at `visualmobile.log` in `Android/data/<game package>/files/`. It says how 
 
 ## Credits
 
-Menu by [Dear ImGui](https://github.com/ocornut/imgui). Hooks by [Dobby](https://github.com/jmpews/Dobby). Both are downloaded by the build, not included here.
+Menu by [Dear ImGui](https://github.com/ocornut/imgui). Hooks by [And64InlineHook](https://github.com/Rprop/And64InlineHook). Both are downloaded by the build, not included here.
