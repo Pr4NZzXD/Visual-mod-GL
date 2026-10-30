@@ -834,7 +834,7 @@ void pagePerf() {
     section("MEMORY");
     toggle("Auto clean", fx.autoClean, [](bool v) { fx.autoClean = v; });
     button("Clean memory now", [] { fx.cleanReq++; });
-    caption(st.perf.empty() ? "Nothing changed yet." : st.perf, 3);
+    caption(st.perf.empty() ? "Nothing changed yet." : st.perf, 4);
 }
 
 void resetLook() {
@@ -853,6 +853,9 @@ void resetLook() {
     }
     ui.eyeX = ui.eyeY = ui.panX = ui.panY = ui.fpsX = ui.fpsY = -1.f;
 }
+
+std::string gLogText;
+bool gLogShown = false;
 
 void pageUi() {
     slider("Menu size", gScaleDraft, 0.6f, 1.8f, 0.05f, "0.00", [](float v) { gScaleDraft = v; }, [] { ui.scale = gScaleDraft; });
@@ -874,6 +877,9 @@ void pageUi() {
     toggle("Rounded corners", ui.rounded, [](bool v) { ui.rounded = v; });
     toggle("Lock icon and menu position", ui.lock, [](bool v) { ui.lock = v; });
     button("Reset menu look", [] { resetLook(); });
+    section("LOG");
+    button("Show last log lines", [] { gLogText = logTail(22); gLogShown = true; });
+    if (gLogShown) caption(gLogText.empty() ? "(the log is empty)" : gLogText, 22);
 }
 
 // ================================================================ the panel, the eye, the FPS counter

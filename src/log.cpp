@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstring>
 #include <ctime>
+#include <deque>
 #include <mutex>
 #include <string>
 
@@ -16,6 +17,7 @@ namespace vm {
 static std::mutex gLogMutex;
 static std::string gDir;
 static std::string gLogPath;
+static std::deque<std::string> gTail;
 
 const char* dataDir() { return gDir.c_str(); }
 
@@ -47,6 +49,19 @@ void logInit() {
     logf("data folder: %s", gDir.empty() ? "(none, logcat only)" : gDir.c_str());
 }
 
+std::string logTail(int maxLines) {
+    std::lock_guard<std::mutex> lock(gLogMutex);
+    std::string out;
+    int start = (int)gTail.size() - maxLines;
+    if (start < 0) start = 0;
+    for (size_t i = (size_t)start; i < gTail.size(); i++) {
+        // keep each line short so the menu can show it on one line
+        out += gTail[i].substr(0, 58);
+        if (i + 1 < gTail.size()) out += "\n";
+    }
+    return out;
+}
+
 void logf(const char* fmt, ...) {
     char msg[1024];
     va_list ap;
@@ -57,13 +72,17 @@ void logf(const char* fmt, ...) {
     __android_log_print(ANDROID_LOG_INFO, "VisualMobile", "%s", msg);
 
     std::lock_guard<std::mutex> lock(gLogMutex);
-    if (gLogPath.empty()) return;
-    FILE* f = fopen(gLogPath.c_str(), "a");
-    if (!f) return;
     time_t t = time(nullptr);
     struct tm tmv;
     localtime_r(&t, &tmv);
-    fprintf(f, "%02d:%02d:%02d %s\n", tmv.tm_hour, tmv.tm_min, tmv.tm_sec, msg);
+    char stamp[16];
+    snprintf(stamp, sizeof(stamp), "%02d:%02d:%02d ", tmv.tm_hour, tmv.tm_min, tmv.tm_sec);
+    gTail.push_back(std::string(stamp) + msg);
+    if (gTail.size() > 60) gTail.pop_front();
+    if (gLogPath.empty()) return;
+    FILE* f = fopen(gLogPath.c_str(), "a");
+    if (!f) return;
+    fprintf(f, "%s%s\n", stamp, msg);
     fclose(f);
 }
 

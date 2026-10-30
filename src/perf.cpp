@@ -1027,7 +1027,12 @@ void onSceneLoaded(double now) {
 
 std::string buildStatus() {
     std::string res = R.active ? std::to_string(R.appW) + "x" + std::to_string(R.appH) : "native";
-    return "Textures removed: " + std::to_string(gMats.size()) + " materials\n" +
+    auto num = [](bool ok, int v) { return ok ? std::to_string(v) : std::string("n/a"); };
+    char lodText[24] = "n/a";
+    if (G.qLod.get) snprintf(lodText, sizeof(lodText), "%.2f", G.qLod.get());
+    std::string quality = "Quality now: AA " + num(G.qAA.get != nullptr, G.qAA.get ? G.qAA.get() : 0) + ", anisotropic " +
+                          num(G.qAniso.get != nullptr, G.qAniso.get ? G.qAniso.get() : 0) + ", LOD bias " + lodText + "\n";
+    return quality + "Textures removed: " + std::to_string(gMats.size()) + " materials\n" +
            "Particles hidden: " + std::to_string(gParts.size()) + "   Shadow objects hidden: " +
            std::to_string(gShadowParts.size()) + "   Light shadows off: " + std::to_string(gLights.size()) + "\n" +
            "Effects off: " + std::to_string(gFx.size()) + "   Resolution: " + res;
