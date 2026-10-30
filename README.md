@@ -1,69 +1,53 @@
 # VisualMobile (native)
 
-The same idea as VisualMobile, but as a plain `.so` library instead of a MelonLoader mod. It is for **Granny: Legacy** on Android (64-bit). It only changes how the game looks. Single player only.
+The same idea as VisualMobile, but as a plain `.so` library instead of a MelonLoader mod. It is for **Granny: Legacy** on Android (64-bit, arm64). It changes how the game looks and runs. Single player only.
 
-Tap the little eye on the screen to open the menu. Drag the eye, or the top bar of the menu, to move it.
+Tap the little eye on the screen to open the menu. Drag the eye, or the top bar of the menu, to move it. Drag on an empty part of a page to scroll it.
+
+Everything the mod changes is remembered and put back when you switch the option off.
 
 ## Features
 
-**Color**
-- Exposure, gamma
-- Saturation, contrast, hue
-- Warmth (cool to warm) and tint (green to magenta)
-- Colour filter with your own colour
+**General**
+- Effects on / off, with a line that says what is going on
+- 6 presets with a small picture each: Default, Warm, Cold, Vivid, Cinematic, Noir
+- Fog: the game's own, none, or your own colour and thickness
+- FPS counter and a frame-time graph (both can be moved around)
 
-**Effects**
-- Bloom
-- Vignette
-- Film grain
-- Chromatic aberration
-- Lens distortion
-- Motion blur
-- Ambient occlusion (new)
-- Depth of field (new)
+**Color**: hue, saturation, contrast, warmth (cool to warm), tint (green to magenta), colour filter with RGB sliders and swatches
 
-**Presets**
-- Default, Warm, Cold, Vivid, Cinematic, Noir
-- New: Night vision, VHS, Dreamy, Horror, Golden hour, Sepia
+**Effects**: exposure, gamma, bloom, vignette, film grain
 
-**Fog**
-- Game default, no fog, or your own colour and thickness
+**Dark scenes** (on the Effects tab)
+- Brightness: flat ambient light, so shadowed corners are less black
+- Light boost: makes the game's real-time lights stronger (flashlight, lamps). Light that is baked into the map does not change. For that, use exposure or gamma
+- Field of view
 
-**Dark scenes**
-- Brightness, light boost, field of view
+**Advanced**: motion blur (and its quality), chromatic aberration, lens distortion, bloom threshold, vignette softness, grain size
 
 **Performance**
-- Low and ultra low graphics
-- No textures, no shadows, no post-processing, hide particles
-- Anti-aliasing, anisotropic filtering and LOD bias (new)
+- Graphics level (low / ultra low), no textures, hide particles, no post-processing, no shadow
 - Draw distance
-- Resolution scale, adaptive resolution, custom screen size
-- FPS limit
-- Clean memory
+- Render resolution (100% to 35%), a custom size, or **adaptive resolution** that follows your target FPS (30 / 45 / 60, never below 50%)
+- Squash view, FPS cap
+- Clean memory now, or automatically after a scene change
 
-**Cheat (new tab)**
-- Player: god mode, speed (1-6x), no clip, no fall damage, no cracking floor, infinite ammo, infinite spray, no trap
-- Enemies, every enemy with its own switches (only what the game has for it is shown): freeze for all seven; blind for Granny, Grandpa and the Little One; deaf for Granny and Grandpa; kill (Mom Spider is stunned and the Little One knocked out, as the game's own weapons do)
-- Items: spawn any of the 55 items, auto grab (presses the interact button while an item is at the crosshair), long reach (item, door and trap-removal ray, 2-40 m)
-- ESP for enemies and items: box outline, name, distance and a maximum distance
+**ESP** (outlines)
+- Items and entities (Granny, Grandpa, the spider, the robot, Slendrina and the others) get an outline that follows their shape
+- 8 colours and a thickness slider for each; visible through walls or only where you can see them
+- The game's own outline component draws it; the mod only turns it on, so it looks like the game's own item outlines
 
-Nothing in the Cheat tab uses a fixed address. Classes, fields and methods are found by name when the game starts (`src/cheat.cpp`), and every field is checked for the expected type before it is written, so a game update that renames something turns off only that feature and says so in the log and at the top of the tab. The names were checked against the dump of Granny: Legacy (Unity 2022.3.62f2); `tools/dump_metadata.py` makes the same list from a `global-metadata.dat` to check them again after an update.
+**Settings**: menu size, menu opacity and icon opacity (both down to 0%), icon size, accent and background colours, rainbow accent, rounded corners, lock the position
 
-**Menu**
-- Floating eye icon
-- FPS counter and frame graph you can move around
-- Menu size, opacity and icon size
-- Your own colours, rainbow mode, rounded corners
-- Lock the position of the icon and the menu
-- Settings are saved
-
-Ambient occlusion and depth of field cost some FPS, so use them with care on weak phones. They only work if the game has them. If it does not, the General page tells you.
+Text in the menu never gets smaller than a readable size, even when the menu is made small, and it gets a soft shadow when the menu is see-through.
 
 ## Get the library
 
 1. Make a new repo on GitHub and upload everything in this folder.
 2. Open the Actions tab and wait for the build to finish.
 3. Download `libvisualmobile` from the artifacts of the run. Inside is `libvisualmobile.so`.
+
+The build downloads Dear ImGui and And64InlineHook by itself. It also takes the menu font (Roboto) from ImGui's `misc/fonts` folder and compiles it into the library; if that folder has no usable font, ImGui's built-in font is used.
 
 ## Put it in the game (MT Manager)
 
@@ -80,15 +64,26 @@ invoke-static {v0}, Ljava/lang/System;->loadLibrary(Ljava/lang/String;)V
    If the method says `.locals 0`, change it to `.locals 1`.
 5. Save, let MT Manager sign the APK, and install it.
 
+## Your files
+
+All of them are in `Android/data/<game package>/files/`:
+
+- `visualmobile.cfg`: your settings. Delete it to reset everything (for example when you made the icon invisible and cannot find it)
+- `visualmobile.log`: what happened in this run
+- `visualmobile.prev.log`: the run before. The log is moved here every time the game starts, so if `visualmobile.log` is empty because you just restarted the game, look here
+
 ## If something goes wrong
 
-Look at `visualmobile.log` in `Android/data/<game package>/files/`. It says how far the loading got. Send it along when you report a problem.
+Send `visualmobile.log` (and `visualmobile.prev.log` if the game was restarted) when you report a problem. It says how far the loading got.
 
-- **No eye on the screen:** the log tells whether the library was loaded and whether the hooks worked.
+- **No eye on the screen:** the log tells whether the library was loaded and whether the hooks worked. The mod needs the game to draw with OpenGL ES; if the game uses Vulkan, the menu will not show.
+- **Menu does not react on a screen without gameplay (main menu):** the mod does its work from three engine calls the game makes every frame. The log line `tick: first call from ...` says which one ran.
 - **Eye shows but no effects:** the log tells whether the post-processing parts of the game were found.
+- **An option does nothing:** the log lines `perf: ready, not found: ...`, `scene: ...` and `esp: ...` say what this game build does not have. Many Unity functions are stripped from the game; the mod calls the engine directly where it can.
+- **Light boost does nothing:** the line under it says how many lights were found. Baked light cannot be changed.
 - Only 64-bit (arm64) phones are supported.
-- It needs the game to draw with OpenGL ES. If the game uses Vulkan, the menu will not show.
+- The render resolution and the light boost call the engine directly. If the game crashes right after you use one of them, switch it off in `visualmobile.cfg` (`perfCustom=0`, `perfRes=0`, `perfAdaptive=0`, `lightOn=0`) and send the log.
 
 ## Credits
 
-Menu by [Dear ImGui](https://github.com/ocornut/imgui). Hooks by [And64InlineHook](https://github.com/Rprop/And64InlineHook). Both are downloaded by the build, not included here.
+Menu by [Dear ImGui](https://github.com/ocornut/imgui) (MIT). Hooks by [And64InlineHook](https://github.com/Rprop/And64InlineHook). Menu font: Roboto (Apache 2.0), as shipped with Dear ImGui. The outlines are drawn by the game's own outline component. The libraries are downloaded by the build, not included here.
