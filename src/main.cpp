@@ -11,6 +11,7 @@
 
 #include "And64InlineHook.hpp"
 #include "effects.h"
+#include "cheat.h"
 #include "esp.h"
 #include "fog.h"
 #include "il2cpp.h"
@@ -96,6 +97,7 @@ void runTick(int source, const char* name) {
     perf::tick(cur);
     scene::tick(cur);
     esp::tick(cur);
+    cheat::tick(cur.cheat);
     gInTick = false;
 }
 
@@ -246,6 +248,9 @@ void* bootstrap(void*) {
     // 3. optional: do not rotate the camera while the menu is touched
     blockTouchOf("GetTouchInput", (void*)hookTouch1, (void**)&gOrigTouch1);
     blockTouchOf("OldTouchInput", (void*)hookTouch2, (void**)&gOrigTouch2);
+
+    // the Cheat tab (every hook is optional: what cannot be hooked is shown in the menu)
+    cheat::install(installHook);
 
     logf("all set");
     return nullptr;

@@ -32,9 +32,7 @@
 //                   stopped and the position pinned), blind, deaf, kill
 //   Items           spawn (the game's own dropper prefab), auto grab (presses the interact button while an item is in
 //                   front of you), long reach (the ray length of PickRay, DoorRay and RayRemoveTraps)
-//   ESP             positions are projected to the screen here (main thread) and drawn by the menu (render thread).
-//                   The outline is the real shape: the mesh of the object is projected and the edges where the surface
-//                   turns away from the camera are kept. A mesh the game does not allow to be read gets a box instead.
+//   ESP             not here: esp.cpp drives the game's own Outline component (its switches are in the ESP page)
 
 namespace vm {
 namespace cheat {
@@ -71,13 +69,8 @@ struct Ic {
     bool (*onNav)(void*) = nullptr;
     void (*setStopped)(void*, bool) = nullptr;
     void (*setVel)(void*, const float*) = nullptr;
-    void (*camW2C)(void*, float*) = nullptr;
-    void (*camProj)(void*, float*) = nullptr;
     void (*colEnabled)(void*, bool) = nullptr;
     void (*rbKinematic)(void*, bool) = nullptr;
-    void (*l2w)(void*, float*) = nullptr;          // Transform.localToWorldMatrix
-    void (*bounds)(void*, float*) = nullptr;       // Renderer.bounds: centre xyz, extents xyz
-    void (*bake)(void*, void*, bool) = nullptr;    // SkinnedMeshRenderer.BakeMesh(mesh, useScale)
 } ic;
 
 struct Off {
@@ -93,8 +86,6 @@ struct Off {
     size_t isCount = 0, seedName = 0, doorReach = 0, trapReach = 0;
 } O;
 
-Il2CppClass *cMesh, *cMeshFilter, *cSmr;
-const MethodInfo *mMeshVerts, *mMeshTris, *mMeshReadable, *mMfShared, *mSmrShared, *mMeshCtor;
 Il2CppClass *cFps, *cPs, *cPick, *cFall, *cItemSpawn, *cSeed, *cDoor, *cRayTraps, *cCollider, *cRigidbody, *cGo, *cTransform;
 const MethodInfo *mClick, *mInstantiate, *mGetComp, *mGetCompsInChildren, *mSetParent, *mSetActive, *mIsChildOf;
 
@@ -138,50 +129,6 @@ EnemyOff gEO[kEnemyCount];
 const MethodInfo* gKillM[kEnemyCount] = {};   // the method that kills / stuns, where the game has one
 const MethodInfo *gStopAI[2] = {}, *gDeadDisable[2] = {}, *gResetDecision[2] = {};
 
-// size of the box drawn around an enemy: height in metres, width as a fraction of the height
-const float kEspH[kEnemyCount] = {1.75f, 1.85f, 1.6f, 1.9f, 0.7f, 0.5f, 1.1f};
-const float kEspW[kEnemyCount] = {0.45f, 0.45f, 1.1f, 0.4f, 1.3f, 1.0f, 0.6f};
-
-// ---------------------------------------------------------------- shapes for the ESP
-// The welded mesh of one Mesh object (vertices at the same place are one vertex, so neighbouring triangles share edges even
-// where the model has texture seams). Built once, then reused by every object that uses the mesh.
-struct MeshData {
-    uint32_t handle = 0;
-    int nOrig = 0;               // vertices of the original mesh
-    std::vector<int> rep;        // welded vertex -> a vertex of the original mesh
-    std::vector<float> pos;      // welded positions, xyz (what a static mesh needs every frame)
-    std::vector<int> tri;        // welded indices, 3 per triangle
-    struct Edge {
-        int a, b, t0, t1;        // t1 = -1: the edge belongs to one triangle only
-    };
-    std::vector<Edge> edges;
-    bool ok = false;
-};
-std::unordered_map<Il2CppObject*, MeshData> gMeshes;
-
-struct Part {                    // one MeshFilter or SkinnedMeshRenderer of an object
-    Il2CppObject* comp = nullptr;
-    uint32_t handle = 0;
-    Il2CppObject* mesh = nullptr;  // key into gMeshes
-    bool skinned = false;
-    Il2CppObject* bake = nullptr;  // scratch mesh the current pose is baked into (skinned only)
-    uint32_t bakeHandle = 0;
-    int mode = 0;                  // skinned: 1 = the baked mesh needs the full matrix, 2 = without the scale (decided once)
-};
-struct Outline {
-    std::vector<Part> parts;
-    bool built = false;
-    int64_t retryAt = 0;
-};
-void freeOutline(Outline& o) {
-    for (Part& p : o.parts) {
-        if (p.handle) release(p.handle);
-        if (p.bakeHandle) release(p.bakeHandle);
-    }
-    o.parts.clear();
-    o.built = false;
-}
-
 struct EnemyState {
     uint32_t handle = 0;      // keeps the object alive while we know it
     int64_t seenAt = 0;
@@ -192,7 +139,6 @@ struct EnemyState {
     bool detSet = false;
     float origDet1 = 0, origDet2 = 0;
     bool dead = false;
-    Outline ol;
 };
 std::unordered_map<Il2CppObject*, EnemyState> gSt[kEnemyCount];
 Il2CppObject* gSeen[kEnemyCount] = {};
@@ -289,23 +235,9 @@ void resolve() {
     ic.onNav = reinterpret_cast<bool (*)(void*)>(icall("UnityEngine.AI.NavMeshAgent::get_isOnNavMesh"));
     ic.setStopped = reinterpret_cast<void (*)(void*, bool)>(icall("UnityEngine.AI.NavMeshAgent::set_isStopped"));
     ic.setVel = reinterpret_cast<void (*)(void*, const float*)>(icall("UnityEngine.AI.NavMeshAgent::set_velocity_Injected"));
-    ic.camW2C = reinterpret_cast<void (*)(void*, float*)>(icall("UnityEngine.Camera::get_worldToCameraMatrix_Injected"));
-    ic.camProj = reinterpret_cast<void (*)(void*, float*)>(icall("UnityEngine.Camera::get_projectionMatrix_Injected"));
     ic.colEnabled = reinterpret_cast<void (*)(void*, bool)>(icall("UnityEngine.Collider::set_enabled"));
     ic.rbKinematic = reinterpret_cast<void (*)(void*, bool)>(icall("UnityEngine.Rigidbody::set_isKinematic"));
 
-    ic.l2w = reinterpret_cast<void (*)(void*, float*)>(icall("UnityEngine.Transform::get_localToWorldMatrix_Injected"));
-    ic.bounds = reinterpret_cast<void (*)(void*, float*)>(icall("UnityEngine.Renderer::get_bounds_Injected"));
-    ic.bake = reinterpret_cast<void (*)(void*, void*, bool)>(icall("UnityEngine.SkinnedMeshRenderer::BakeMesh"));
-    cMesh = findClass("UnityEngine", "Mesh");
-    cMeshFilter = findClass("UnityEngine", "MeshFilter");
-    cSmr = findClass("UnityEngine", "SkinnedMeshRenderer");
-    mMeshVerts = findMethod(cMesh, "get_vertices", 0);
-    mMeshTris = findMethod(cMesh, "get_triangles", 0);
-    mMeshReadable = findMethod(cMesh, "get_isReadable", 0);
-    mMeshCtor = findMethod(cMesh, ".ctor", 0);
-    mMfShared = findMethod(cMeshFilter, "get_sharedMesh", 0);
-    mSmrShared = findMethod(cSmr, "get_sharedMesh", 0);
     cFps = findClass("", "MobileFPS");
     cPs = findClass("", "PlayerStatus");
     cPick = findClass("", "PickRay");
@@ -390,8 +322,8 @@ void resolve() {
     if (!(mInstantiate && mGetComp && O.prItemDrop && O.prDropP && O.isCount))
         logf("cheat: spawn is missing:%s%s%s%s%s", mInstantiate ? "" : " Instantiate", mGetComp ? "" : " GetComponent",
              O.prItemDrop ? "" : " ItemDrop", O.prDropP ? "" : " DropP", O.isCount ? "" : " CountItem");
-    logf("cheat: resolved (spawn %s, auto grab %s, ESP %s)", (mInstantiate && mGetComp && O.prItemDrop && O.prDropP && O.isCount) ? "ok" : "unavailable",
-         (mClick && O.prDrop1 && O.prPrompt) ? "ok" : "unavailable", (ic.camW2C && ic.camProj && ic.getPos) ? "ok" : "unavailable");
+    logf("cheat: resolved (spawn %s, auto grab %s)", (mInstantiate && mGetComp && O.prItemDrop && O.prDropP && O.isCount) ? "ok" : "unavailable",
+         (mClick && O.prDrop1 && O.prPrompt) ? "ok" : "unavailable");
 }
 
 // ---------------------------------------------------------------- hooks: god mode
@@ -671,7 +603,6 @@ void enemyHook(void* self, void* mi) {
 struct ItemEntry {
     uint32_t handle = 0;
     char name[28] = {0};
-    Outline ol;
 };
 std::unordered_map<Il2CppObject*, ItemEntry> gItems;
 int64_t gItemScanAt = 0;
@@ -730,22 +661,18 @@ void scanRayObjs(int64_t now) {
 }
 
 void scanItems(int64_t now) {
-    bool need = gC.espItem || gC.autoGrab;
+    bool need = gC.autoGrab;
     if (!need) {
         if (!gItems.empty()) {
-            for (auto& kv : gItems) {
-                freeOutline(kv.second.ol);
-                release(kv.second.handle);
-            }
+            for (auto& kv : gItems) release(kv.second.handle);
             gItems.clear();
         }
         return;
     }
     if (now < gItemScanAt || !cSeed) return;
-    gItemScanAt = now + (gC.autoGrab ? 250 : 1000);
+    gItemScanAt = now + 250;
     for (auto it = gItems.begin(); it != gItems.end();) {
         if (!valid(it->first)) {
-            freeOutline(it->second.ol);
             release(it->second.handle);
             it = gItems.erase(it);
         } else {
@@ -851,30 +778,15 @@ bool spawnItem(Il2CppObject* pr, int index, const char** why) {
     return true;
 }
 
-// ---------------------------------------------------------------- camera maths (shared by ESP and auto grab)
+// ---------------------------------------------------------------- the camera (auto grab)
 struct Cam {
-    bool ok = false;
-    float v[16], p[16], vp[16];
     float pos[3] = {0, 0, 0};
     float fwd[3] = {0, 0, 1};
-    float aspect = 1.f;
 };
-
-void mul4(const float* a, const float* b, float* r) {  // column-major: r = a * b
-    for (int c = 0; c < 4; c++)
-        for (int row = 0; row < 4; row++) {
-            float sum = 0.f;
-            for (int k = 0; k < 4; k++) sum += a[k * 4 + row] * b[c * 4 + k];
-            r[c * 4 + row] = sum;
-        }
-}
 
 bool getCam(Cam& c) {
     Il2CppObject* cam = gCamObj;
-    if (!valid(cam) || nowMs() - gFpsAt > 500 || !ic.camW2C || !ic.camProj || !ic.getTransform || !ic.getPos || !ic.getRot) return false;
-    ic.camW2C(cam, c.v);
-    ic.camProj(cam, c.p);
-    mul4(c.p, c.v, c.vp);
+    if (!valid(cam) || nowMs() - gFpsAt > 500 || !ic.getTransform || !ic.getPos || !ic.getRot) return false;
     Il2CppObject* tr = ic.getTransform(cam);
     if (!tr) return false;
     ic.getPos(tr, c.pos);
@@ -883,263 +795,7 @@ bool getCam(Cam& c) {
     c.fwd[0] = 2.f * (q[0] * q[2] + q[3] * q[1]);
     c.fwd[1] = 2.f * (q[1] * q[2] - q[3] * q[0]);
     c.fwd[2] = 1.f - 2.f * (q[0] * q[0] + q[1] * q[1]);
-    c.aspect = std::fabs(c.p[0]) > 1e-6f ? c.p[5] / c.p[0] : 1.f;
-    if (c.aspect < 0.1f || c.aspect > 10.f) c.aspect = 1.78f;
-    c.ok = true;
     return true;
-}
-
-// Unity matrices are column-major: element (row r, column c) is m[c * 4 + r]. Result: 0..1, origin top-left.
-bool project(const Cam& c, const float* w, float* sx, float* sy) {
-    const float* V = c.v;
-    const float* M = c.p;
-    float vx = V[0] * w[0] + V[4] * w[1] + V[8] * w[2] + V[12];
-    float vy = V[1] * w[0] + V[5] * w[1] + V[9] * w[2] + V[13];
-    float vz = V[2] * w[0] + V[6] * w[1] + V[10] * w[2] + V[14];
-    float vw = V[3] * w[0] + V[7] * w[1] + V[11] * w[2] + V[15];
-    float cx = M[0] * vx + M[4] * vy + M[8] * vz + M[12] * vw;
-    float cy = M[1] * vx + M[5] * vy + M[9] * vz + M[13] * vw;
-    float cw = M[3] * vx + M[7] * vy + M[11] * vz + M[15] * vw;
-    if (cw < 0.05f) return false;  // behind the camera
-    *sx = cx / cw * 0.5f + 0.5f;
-    *sy = 0.5f - cy / cw * 0.5f;
-    return true;
-}
-
-// ---------------------------------------------------------------- the shape of an object
-struct Q {
-    int x, y, z;
-    bool operator==(const Q& o) const { return x == o.x && y == o.y && z == o.z; }
-};
-struct QHash {
-    size_t operator()(const Q& q) const {
-        return (size_t)((uint32_t)q.x * 73856093u ^ (uint32_t)q.y * 19349663u ^ (uint32_t)q.z * 83492791u);
-    }
-};
-int gUnreadable = 0;
-
-MeshData* meshData(Il2CppObject* mesh) {
-    auto it = gMeshes.find(mesh);
-    if (it != gMeshes.end()) return it->second.ok ? &it->second : nullptr;
-    MeshData& md = gMeshes[mesh];
-    md.handle = retain(mesh);
-    if (!mMeshVerts || !mMeshTris || !mMeshReadable || !callBool(mMeshReadable, mesh, nullptr, false)) {
-        if (gUnreadable++ < 4) logf("cheat: ESP: a mesh is not readable, a box is drawn for it");
-        return nullptr;
-    }
-    Il2CppObject* va = invoke(mMeshVerts, mesh, nullptr);
-    Il2CppObject* ta = invoke(mMeshTris, mesh, nullptr);
-    if (!va || !ta) return nullptr;
-    size_t nv = A.array_length(va), nt = A.array_length(ta);
-    if (nv < 3 || nt < 3 || nv > 30000 || nt > 60000) return nullptr;  // too heavy to outline every frame
-    const float* v = reinterpret_cast<const float*>(arrayData(va));
-    const int* t = reinterpret_cast<const int*>(arrayData(ta));
-    md.nOrig = (int)nv;
-
-    std::unordered_map<Q, int, QHash> weld;
-    std::vector<int> w(nv);
-    for (size_t i = 0; i < nv; i++) {
-        Q q{(int)std::lround(v[i * 3] * 1e4f), (int)std::lround(v[i * 3 + 1] * 1e4f), (int)std::lround(v[i * 3 + 2] * 1e4f)};
-        auto f = weld.find(q);
-        if (f == weld.end()) {
-            f = weld.emplace(q, (int)md.rep.size()).first;
-            md.rep.push_back((int)i);
-            md.pos.push_back(v[i * 3]);
-            md.pos.push_back(v[i * 3 + 1]);
-            md.pos.push_back(v[i * 3 + 2]);
-        }
-        w[i] = f->second;
-    }
-    std::unordered_map<uint64_t, int> edgeAt;
-    for (size_t i = 0; i + 2 < nt; i += 3) {
-        if (t[i] < 0 || t[i + 1] < 0 || t[i + 2] < 0 || (size_t)t[i] >= nv || (size_t)t[i + 1] >= nv || (size_t)t[i + 2] >= nv) continue;
-        int a = w[t[i]], b = w[t[i + 1]], c = w[t[i + 2]];
-        if (a == b || b == c || a == c) continue;  // collapsed by the welding
-        int ti = (int)(md.tri.size() / 3);
-        md.tri.push_back(a);
-        md.tri.push_back(b);
-        md.tri.push_back(c);
-        int e[3][2] = {{a, b}, {b, c}, {c, a}};
-        for (auto& pr : e) {
-            int lo = pr[0] < pr[1] ? pr[0] : pr[1], hi = pr[0] < pr[1] ? pr[1] : pr[0];
-            uint64_t key = ((uint64_t)(uint32_t)lo << 32) | (uint32_t)hi;
-            auto f = edgeAt.find(key);
-            if (f == edgeAt.end()) {
-                edgeAt.emplace(key, (int)md.edges.size());
-                md.edges.push_back({lo, hi, ti, -1});
-            } else if (md.edges[f->second].t1 == -1) {
-                md.edges[f->second].t1 = ti;
-            }
-        }
-    }
-    md.ok = !md.tri.empty();
-    return md.ok ? &md : nullptr;
-}
-
-void buildOutline(Il2CppObject* owner, Outline& ol, int64_t now) {
-    ol.built = true;
-    Il2CppObject* go = ic.getGameObject ? ic.getGameObject(owner) : nullptr;
-    if (!go || !mGetCompsInChildren) return;
-    for (int pass = 0; pass < 2; pass++) {
-        Il2CppClass* k = pass == 0 ? cMeshFilter : cSmr;
-        if (!k || !(pass == 0 ? mMfShared : mSmrShared) || !mMeshVerts) continue;
-        bool inactive = false;
-        void* a[2] = {typeObject(k), &inactive};
-        Il2CppObject* arr = invoke(mGetCompsInChildren, go, a);
-        if (!arr) continue;
-        size_t n = A.array_length(arr);
-        Il2CppObject** el = arrayData(arr);
-        for (size_t i = 0; i < n && ol.parts.size() < 8; i++) {
-            Il2CppObject* comp = el[i];
-            if (!valid(comp)) continue;
-            Il2CppObject* mesh = invoke(pass == 0 ? mMfShared : mSmrShared, comp, nullptr);
-            if (!valid(mesh) || !meshData(mesh)) continue;
-            Part p;
-            p.comp = comp;
-            p.handle = retain(comp);
-            p.mesh = mesh;
-            p.skinned = pass == 1;
-            if (p.skinned) {
-                if (!ic.bake || !mMeshCtor || !A.object_new) {
-                    release(p.handle);
-                    continue;
-                }
-                Il2CppObject* bm = A.object_new(cMesh);
-                invoke(mMeshCtor, bm, nullptr);
-                p.bake = bm;
-                p.bakeHandle = retain(bm);
-            }
-            ol.parts.push_back(p);
-        }
-    }
-    if (ol.parts.empty()) {
-        ol.built = false;
-        ol.retryAt = now + 5000;  // maybe it was not set up yet
-    }
-}
-
-// A baked mesh comes with or without the scale of the object in it (the documentation is vague, so it is measured once):
-// the way of placing it that puts it where the renderer says the object is wins.
-int chooseBakeMode(Il2CppObject* comp, const float* L, const float* verts, int n) {
-    float rb[6];
-    if (!ic.bounds) return 2;
-    ic.bounds(comp, rb);
-    float noScale[16];
-    memcpy(noScale, L, sizeof(noScale));
-    for (int c = 0; c < 3; c++) {
-        float len = std::sqrt(L[c * 4] * L[c * 4] + L[c * 4 + 1] * L[c * 4 + 1] + L[c * 4 + 2] * L[c * 4 + 2]);
-        if (len > 1e-6f)
-            for (int r = 0; r < 3; r++) noScale[c * 4 + r] = L[c * 4 + r] / len;
-    }
-    float best[2] = {0, 0};
-    for (int m = 0; m < 2; m++) {
-        const float* M = m == 0 ? L : noScale;
-        float mn[3] = {1e30f, 1e30f, 1e30f}, mx[3] = {-1e30f, -1e30f, -1e30f};
-        int step = n > 400 ? n / 400 : 1;
-        for (int i = 0; i < n; i += step) {
-            const float* v = verts + i * 3;
-            for (int a = 0; a < 3; a++) {
-                float w = M[a] * v[0] + M[4 + a] * v[1] + M[8 + a] * v[2] + M[12 + a];
-                if (w < mn[a]) mn[a] = w;
-                if (w > mx[a]) mx[a] = w;
-            }
-        }
-        float sc = 0.f;
-        for (int a = 0; a < 3; a++) sc += std::fabs((mn[a] + mx[a]) * 0.5f - rb[a]) + std::fabs((mx[a] - mn[a]) * 0.5f - rb[3 + a]);
-        best[m] = sc;
-    }
-    return best[0] <= best[1] ? 1 : 2;
-}
-
-// Adds the outline of the object to `lines` (x1 y1 x2 y2 per segment). bb = the screen box of what was drawn.
-bool emitOutline(const Cam& cam, Outline& ol, std::vector<float>& lines, size_t cap, float* bb) {
-    static std::vector<float> wp, sx, sy;
-    static std::vector<signed char> face, okv;
-    bool any = false;
-    bb[0] = bb[1] = 1e9f;
-    bb[2] = bb[3] = -1e9f;
-    for (Part& p : ol.parts) {
-        if (lines.size() >= cap * 4) break;
-        if (!valid(p.comp)) continue;
-        auto mit = gMeshes.find(p.mesh);
-        if (mit == gMeshes.end() || !mit->second.ok) continue;
-        MeshData& md = mit->second;
-        Il2CppObject* tr = ic.getTransform(p.comp);
-        if (!tr || !ic.l2w) continue;
-        float L[16];
-        ic.l2w(tr, L);
-        const float* pos = md.pos.data();
-        if (p.skinned) {
-            ic.bake(p.comp, p.bake, true);
-            Il2CppObject* va = invoke(mMeshVerts, p.bake, nullptr);
-            if (!va || (int)A.array_length(va) != md.nOrig) continue;
-            const float* v = reinterpret_cast<const float*>(arrayData(va));
-            if (p.mode == 0) p.mode = chooseBakeMode(p.comp, L, v, md.nOrig);
-            if (p.mode == 2) {
-                for (int c = 0; c < 3; c++) {
-                    float len = std::sqrt(L[c * 4] * L[c * 4] + L[c * 4 + 1] * L[c * 4 + 1] + L[c * 4 + 2] * L[c * 4 + 2]);
-                    if (len > 1e-6f)
-                        for (int r = 0; r < 3; r++) L[c * 4 + r] /= len;
-                }
-            }
-            wp.resize(md.rep.size() * 3);
-            for (size_t i = 0; i < md.rep.size(); i++) {
-                wp[i * 3] = v[md.rep[i] * 3];
-                wp[i * 3 + 1] = v[md.rep[i] * 3 + 1];
-                wp[i * 3 + 2] = v[md.rep[i] * 3 + 2];
-            }
-            pos = wp.data();
-        }
-        float M[16];
-        mul4(cam.vp, L, M);
-        size_t nvw = md.rep.size();
-        sx.resize(nvw);
-        sy.resize(nvw);
-        okv.resize(nvw);
-        for (size_t i = 0; i < nvw; i++) {
-            float x = pos[i * 3], y = pos[i * 3 + 1], z = pos[i * 3 + 2];
-            float cw = M[3] * x + M[7] * y + M[11] * z + M[15];
-            if (cw < 0.05f) {
-                okv[i] = 0;
-                continue;
-            }
-            okv[i] = 1;
-            sx[i] = (M[0] * x + M[4] * y + M[8] * z + M[12]) / cw * 0.5f + 0.5f;
-            sy[i] = 0.5f - (M[1] * x + M[5] * y + M[9] * z + M[13]) / cw * 0.5f;
-        }
-        size_t ntri = md.tri.size() / 3;
-        face.resize(ntri);
-        for (size_t t = 0; t < ntri; t++) {
-            int a = md.tri[t * 3], b = md.tri[t * 3 + 1], c = md.tri[t * 3 + 2];
-            if (!okv[a] || !okv[b] || !okv[c]) {
-                face[t] = 0;
-                continue;
-            }
-            float area = (sx[b] - sx[a]) * (sy[c] - sy[a]) - (sx[c] - sx[a]) * (sy[b] - sy[a]);
-            face[t] = area > 0.f ? 1 : -1;  // which side is "front" does not matter: the silhouette is where the two meet
-        }
-        for (const MeshData::Edge& e : md.edges) {
-            signed char f0 = face[e.t0];
-            if (f0 == 0) continue;
-            if (e.t1 >= 0) {
-                signed char f1 = face[e.t1];
-                if (f1 == 0 || f1 == f0) continue;
-            }
-            if (lines.size() >= cap * 4) break;
-            lines.push_back(sx[e.a]);
-            lines.push_back(sy[e.a]);
-            lines.push_back(sx[e.b]);
-            lines.push_back(sy[e.b]);
-            for (int v : {e.a, e.b}) {
-                if (sx[v] < bb[0]) bb[0] = sx[v];
-                if (sy[v] < bb[1]) bb[1] = sy[v];
-                if (sx[v] > bb[2]) bb[2] = sx[v];
-                if (sy[v] > bb[3]) bb[3] = sy[v];
-            }
-            any = true;
-        }
-    }
-    return any;
 }
 
 // ---------------------------------------------------------------- auto grab
@@ -1310,99 +966,6 @@ void fpsHook(void* self, void* mi) {
     gOrigFps(self, mi);
 }
 
-// ---------------------------------------------------------------- ESP
-bool gEspPublished = false;
-int64_t gEspAt = 0;
-
-void espTick(int64_t now) {
-    if (now < gEspAt) return;
-    gEspAt = now + 33;
-    if (!gC.espEnemy && !gC.espItem) {
-        if (gEspPublished) {
-            publishEsp({}, {});
-            gEspPublished = false;
-        }
-        return;
-    }
-    Cam cam;
-    if (!getCam(cam)) return;
-    std::vector<EspMark> marks;
-    std::vector<float> lines;
-    marks.reserve(48);
-    lines.reserve(4096);
-    int builds = 0;  // outlines are built a couple per frame, so nothing stutters when many things appear at once
-
-    // owner: the component of the object; ol: where its shape is kept; wantShape: the Outline switch; shapeDist: how far shapes are drawn
-    auto add = [&](Il2CppObject* owner, Outline& ol, bool wantShape, float shapeDist, const float* foot, float h, float wRatio,
-                   float maxDist, bool enemy, const char* name) {
-        float dx = foot[0] - cam.pos[0], dy = foot[1] - cam.pos[1], dz = foot[2] - cam.pos[2];
-        float d = std::sqrt(dx * dx + dy * dy + dz * dz);
-        if (d > maxDist || marks.size() >= 96) return;
-        EspMark m;
-        m.dist = d;
-        m.enemy = enemy;
-        snprintf(m.name, sizeof(m.name), "%s", name);
-
-        bool shape = false;
-        float bb[4];
-        if (wantShape && d <= shapeDist && lines.size() < 6000 * 4) {
-            if (!ol.built && now >= ol.retryAt && builds < 2) {
-                builds++;
-                buildOutline(owner, ol, now);
-            }
-            if (!ol.parts.empty()) {
-                size_t start = lines.size();
-                if (emitOutline(cam, ol, lines, 1500, bb)) {
-                    shape = true;
-                    m.lineStart = (int)(start / 4);
-                    m.lineCount = (int)((lines.size() - start) / 4);
-                    m.x = (bb[0] + bb[2]) * 0.5f;
-                    m.y = (bb[1] + bb[3]) * 0.5f;
-                    m.w = bb[2] - bb[0];
-                    m.h = bb[3] - bb[1];
-                } else {
-                    lines.resize(start);
-                }
-            }
-        }
-        if (!shape) {
-            float head[3] = {foot[0], foot[1] + h, foot[2]};
-            float fx, fy, hx, hy;
-            if (!project(cam, foot, &fx, &fy) || !project(cam, head, &hx, &hy)) return;
-            float bh = std::fabs(fy - hy);
-            if (bh < 0.003f) bh = 0.003f;
-            m.x = fx;
-            m.y = (fy + hy) * 0.5f;
-            m.h = bh;
-            m.w = bh * wRatio / cam.aspect;
-        }
-        if (m.x < -0.3f || m.x > 1.3f || m.y < -0.3f || m.y > 1.3f) return;
-        marks.push_back(m);
-    };
-
-    if (gC.espEnemy) {
-        for (int k = 0; k < kEnemyCount; k++) {
-            for (auto& kv : gSt[k]) {
-                if (kv.second.dead || now - kv.second.seenAt > 1500 || !valid(kv.first) || !activeIn(kv.first)) continue;
-                float p[3];
-                if (position(kv.first, p))
-                    add(kv.first, kv.second.ol, gC.espEnemyOutline, 90.f, p, kEspH[k], kEspW[k], gC.espEnemyMax, true, kEnemyNames[k]);
-            }
-        }
-    }
-    if (gC.espItem) {
-        for (auto& kv : gItems) {
-            if (!valid(kv.first) || !activeIn(kv.first)) continue;
-            float p[3];
-            if (!position(kv.first, p)) continue;
-            p[1] -= 0.12f;
-            add(kv.first, kv.second.ol, gC.espItemOutline, 40.f, p, 0.32f, 1.0f, gC.espItemMax, false, kv.second.name);
-        }
-    }
-    publishEsp(marks, lines);
-    gEspPublished = true;
-}
-
 // ---------------------------------------------------------------- housekeeping
 int64_t gPruneAt = 0;
 void prune(int64_t now) {
@@ -1412,20 +975,11 @@ void prune(int64_t now) {
         for (auto it = gSt[k].begin(); it != gSt[k].end();) {
             if (!valid(it->first)) {  // destroyed (new scene)
                 if (gSeen[k] == it->first) gSeen[k] = nullptr;
-                freeOutline(it->second.ol);
-                release(it->second.handle);
+                    release(it->second.handle);
                 it = gSt[k].erase(it);
             } else {
                 ++it;
             }
-        }
-    }
-    for (auto it = gMeshes.begin(); it != gMeshes.end();) {  // meshes of a level that is gone
-        if (!valid(it->first)) {
-            release(it->second.handle);
-            it = gMeshes.erase(it);
-        } else {
-            ++it;
         }
     }
     if (gFps && !valid(gFps)) {
@@ -1453,10 +1007,6 @@ void status(int64_t now) {
     t += inGame ? "\nPlayer found." : "\nPlayer not found yet: start a level.";
     if (gC.noclip && !O.fpsMoveDir) t += " No clip is not available (moveDirection not found).";
     if (gC.godMode && !gGodHooksOk) t += " God mode is incomplete (hooks missing).";
-    if (gC.espEnemy || gC.espItem) {
-        Cam c;
-        if (!getCam(c)) t += " ESP is waiting for the camera.";
-    }
     if (t != gStatusLast) {
         gStatusLast = t;
         setCheatStatus(t);
@@ -1495,8 +1045,6 @@ void logChanges(const CheatSettings& s) {
     }
     if (s.autoGrab != gPrev.autoGrab) note("auto grab", s.autoGrab);
     if (s.longReachOn != gPrev.longReachOn || s.reach != gPrev.reach) logf("cheat: long reach -> %s %.0f m", onOff(s.longReachOn), s.reach);
-    if (s.espEnemy != gPrev.espEnemy) note("enemy ESP", s.espEnemy);
-    if (s.espItem != gPrev.espItem) note("item ESP", s.espItem);
 }
 
 }  // namespace
@@ -1602,7 +1150,6 @@ void tick(const CheatSettings& s) {
     }
 
     scanItems(now);
-    espTick(now);
     prune(now);
     status(now);
 }

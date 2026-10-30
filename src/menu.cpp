@@ -22,6 +22,11 @@
 // while they are drawn (the next frame matches the finger against those).
 // Runs on the render thread, right before the game presents a frame.
 
+#ifdef HAVE_UI_FONT
+extern const unsigned char kUiFont[];  // made by CMake from ImGui's misc/fonts
+extern const unsigned int kUiFontSize;
+#endif
+
 namespace vm {
 namespace {
 
@@ -195,53 +200,6 @@ void text(float x, float y, float w, float h, const std::string& t, float size, 
     D->AddText(gFont, size, ImVec2(px, py), U(c), t.c_str(), nullptr, wrap ? w : 0.f);
     if (bold) D->AddText(gFont, size, ImVec2(px + size * 0.04f, py), U(c), t.c_str(), nullptr, wrap ? w : 0.f);
     if (clip) D->PopClipRect();
-}
-
-// ---- ESP: boxes with name and distance, drawn under the menu. The game side (cheat.cpp) works out where things are.
-void drawEsp() {
-    const CheatSettings& c = fx.cheat;
-    if (!c.espEnemy && !c.espItem) return;
-    std::vector<float> lines;
-    std::vector<EspMark> marks = currentEsp(&lines);
-    float size = fsz(12.5f, 12.f);
-    float line = std::max(1.5f, 1.5f * S);
-    for (const EspMark& m : marks) {
-        bool en = m.enemy;
-        if (en ? !c.espEnemy : !c.espItem) continue;
-        bool showName = en ? c.espEnemyName : c.espItemName;
-        bool showDist = en ? c.espEnemyDist : c.espItemDist;
-        bool showBox = en ? c.espEnemyOutline : c.espItemOutline;
-        Col col = en ? Col(1.f, 0.30f, 0.28f, 1.f) : Col(0.25f, 1.f, 0.45f, 1.f);
-
-        float bw = std::max(m.w * W, 6.f * S), bh = std::max(m.h * H, 6.f * S);
-        float x0 = m.x * W - bw * 0.5f, y0 = m.y * H - bh * 0.5f;
-        if (showBox) {
-            if (m.lineCount > 0 && (size_t)(m.lineStart + m.lineCount) * 4 <= lines.size()) {
-                // the real shape: the edges of the model where its surface turns away from you
-                ImU32 u = U(col);
-                const float* l = lines.data() + (size_t)m.lineStart * 4;
-                for (int i = 0; i < m.lineCount; i++, l += 4)
-                    D->AddLine(ImVec2(l[0] * W, l[1] * H), ImVec2(l[2] * W, l[3] * H), u, line);
-            } else {
-                // no readable mesh: a box
-                D->AddRect(ImVec2(x0 - 1.f, y0 - 1.f), ImVec2(x0 + bw + 1.f, y0 + bh + 1.f), U(Col(0.f, 0.f, 0.f, 0.7f)), 0.f, 0, line + 2.f);
-                D->AddRect(ImVec2(x0, y0), ImVec2(x0 + bw, y0 + bh), U(col), 0.f, 0, line);
-            }
-        }
-        std::string label;
-        if (showName) label = m.name;
-        if (showDist) {
-            char d[24];
-            snprintf(d, sizeof(d), "%.0fm", m.dist);
-            label += label.empty() ? d : std::string(" ") + d;
-        }
-        if (!label.empty()) {
-            float lw = 190.f * S, lh = size + 4.f * S;
-            float lx = m.x * W - lw * 0.5f, ly = y0 - lh - 1.f * S;
-            text(lx + 1.f, ly + 1.f, lw, lh, label, size, Col(0.f, 0.f, 0.f, 0.85f), Center, true);
-            text(lx, ly, lw, lh, label, size, col, Center, true);
-        }
-    }
 }
 
 Col whiteA(float a) { return Col(1.f, 1.f, 1.f, a); }
@@ -658,6 +616,9 @@ void resetValues() {
     d.fovOn = fx.fovOn; d.fov = fx.fov; d.adaptive = fx.adaptive; d.adaptTarget = fx.adaptTarget;
     d.aaMode = fx.aaMode; d.anisoMode = fx.anisoMode; d.lodOn = fx.lodOn; d.lodBias = fx.lodBias;
     d.cheat = fx.cheat;  // the Cheat tab has nothing to do with the look: presets and "Reset" leave it alone
+    d.espItems = fx.espItems; d.espEnemies = fx.espEnemies; d.espWalls = fx.espWalls;
+    d.espItemColor = fx.espItemColor; d.espEnemyColor = fx.espEnemyColor;
+    d.espItemWidth = fx.espItemWidth; d.espEnemyWidth = fx.espEnemyWidth;
     fx = d;
 }
 
@@ -954,20 +915,26 @@ void cheatItems() {
     caption("Items, doors and everything you can interact with work from far away. The slider is the distance in metres.", 2);
 }
 
+void espColorRows(int sel, const std::function<void(int)>& pick) {
+    const std::vector<std::string> row1(kEspColorNames, kEspColorNames + 4), row2(kEspColorNames + 4, kEspColorNames + 8);
+    segments(row1, sel < 4 ? sel : -1, [pick](int i) { pick(i); }, 0.9f);
+    segments(row2, sel >= 4 ? sel - 4 : -1, [pick](int i) { pick(i + 4); }, 0.9f);
+}
+
 void cheatEsp() {
-    CheatSettings& c = fx.cheat;
-    section("ENEMY ESP");
-    toggle("Enemy ESP", c.espEnemy, [](bool v) { fx.cheat.espEnemy = v; });
-    toggle("Name", c.espEnemyName, [](bool v) { fx.cheat.espEnemyName = v; });
-    toggle("Distance", c.espEnemyDist, [](bool v) { fx.cheat.espEnemyDist = v; });
-    toggle("Outline", c.espEnemyOutline, [](bool v) { fx.cheat.espEnemyOutline = v; });
-    slider("Max distance", c.espEnemyMax, 10.f, 300.f, 5.f, "0", [](float v) { fx.cheat.espEnemyMax = v; });
-    section("ITEM ESP");
-    toggle("Item ESP", c.espItem, [](bool v) { fx.cheat.espItem = v; });
-    toggle("Name", c.espItemName, [](bool v) { fx.cheat.espItemName = v; });
-    toggle("Distance", c.espItemDist, [](bool v) { fx.cheat.espItemDist = v; });
-    toggle("Outline", c.espItemOutline, [](bool v) { fx.cheat.espItemOutline = v; });
-    slider("Max distance", c.espItemMax, 10.f, 300.f, 5.f, "0", [](float v) { fx.cheat.espItemMax = v; });
+    section("ITEMS");
+    toggle("Item outline", fx.espItems, [](bool v) { fx.espItems = v; });
+    espColorRows(fx.espItemColor, [](int i) { fx.espItemColor = i; });
+    slider("Thickness", fx.espItemWidth, 1.f, 8.f, 0.5f, "0.0", [](float v) { fx.espItemWidth = v; });
+    section("ENTITIES");
+    toggle("Entity outline", fx.espEnemies, [](bool v) { fx.espEnemies = v; });
+    espColorRows(fx.espEnemyColor, [](int i) { fx.espEnemyColor = i; });
+    slider("Thickness", fx.espEnemyWidth, 1.f, 8.f, 0.5f, "0.0", [](float v) { fx.espEnemyWidth = v; });
+    section("VIEW");
+    toggle("Through walls", fx.espWalls, [](bool v) { fx.espWalls = v; });
+    caption("Off: the outline shows only where you can see the object.");
+    caption("The outline follows the real shape. The game's own outline component draws it.", 2);
+    if (!st.esp.empty()) caption(st.esp, 2);
 }
 
 void pageCheat() {
@@ -1320,27 +1287,30 @@ void initImGui() {
     ImGuiIO& io = ImGui::GetIO();
     io.IniFilename = nullptr;
     io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
-    // The built-in pixel font turns to mush when the menu is small. Android ships clean fonts: use the first one found.
-    static const char* const kFonts[] = {
-        "/system/fonts/Roboto-Regular.ttf",       "/system/fonts/RobotoStatic-Regular.ttf", "/system/fonts/Roboto[wdth,wght].ttf",
-        "/system/fonts/NotoSans-Regular.ttf",     "/system/fonts/GoogleSans-Regular.ttf",   "/system/fonts/DroidSans.ttf",
-        "/system/fonts/SECRobotoLight-Regular.ttf",
-    };
-    for (const char* path : kFonts) {
-        FILE* f = fopen(path, "rb");
-        if (!f) continue;
-        fclose(f);
+    // The menu font: the Roboto the build compiled in (CMake) -> a clean system font -> ImGui's built-in pixel font.
+    {
         ImFontConfig fc;
         fc.OversampleH = 2;
         fc.OversampleV = 2;
-        gFont = io.Fonts->AddFontFromFileTTF(path, 40.f, &fc);
-        if (gFont) {
-            logf("menu: font %s", path);
-            break;
+#ifdef HAVE_UI_FONT
+        fc.FontDataOwnedByAtlas = false;  // it lives in the library, ImGui must not free it
+        gFont = io.Fonts->AddFontFromMemoryTTF(const_cast<unsigned char*>(kUiFont), (int)kUiFontSize, 40.f, &fc);
+        if (gFont) logf("menu: font Roboto (built in)");
+#endif
+        static const char* const kFonts[] = {
+            "/system/fonts/Roboto-Regular.ttf", "/system/fonts/RobotoStatic-Regular.ttf", "/system/fonts/NotoSans-Regular.ttf",
+            "/system/fonts/DroidSans.ttf",
+        };
+        for (size_t i = 0; !gFont && i < sizeof(kFonts) / sizeof(kFonts[0]); i++) {
+            FILE* f = fopen(kFonts[i], "rb");
+            if (!f) continue;
+            fclose(f);
+            gFont = io.Fonts->AddFontFromFileTTF(kFonts[i], 40.f, &fc);
+            if (gFont) logf("menu: font %s", kFonts[i]);
         }
     }
     if (!gFont) {
-        logf("menu: no system font found, using the built-in one");
+        logf("menu: no usable font, using the built-in one");
         ImFontConfig fc;
         fc.SizePixels = 32.f;
         gFont = io.Fonts->AddFontDefault(&fc);
@@ -1400,7 +1370,6 @@ void menuFrame(int w, int h) {
     ImGui::NewFrame();
     D = ImGui::GetForegroundDrawList();
     hits.clear();
-    drawEsp();
     drawFps();
     drawEye();
     if (ui.open) drawPanel();

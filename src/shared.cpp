@@ -17,13 +17,7 @@ static FxSettings gFx;
 static unsigned gFxVersion = 1;
 static MainStatus gStatus;
 static Touch gTouch;
-static std::vector<EspMark> gEsp;
-static std::vector<float> gEspLines;
-static int64_t gEspAt = 0;
 
-static int64_t steadyMs() {
-    return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
-}
 
 std::atomic<bool> gBlockTouch{false};
 static std::atomic<float> gMeasuredFps{0.f};
@@ -59,6 +53,11 @@ void setSceneStatus(const std::string& s) {
     gStatus.scene = s;
 }
 
+void setEspStatus(const std::string& s) {
+    std::lock_guard<std::mutex> l(gMutex);
+    gStatus.esp = s;
+}
+
 void setCheatStatus(const std::string& s) {
     std::lock_guard<std::mutex> l(gMutex);
     gStatus.cheat = s;
@@ -81,23 +80,6 @@ void postToast(const char* text) {
     std::lock_guard<std::mutex> l(gMutex);
     gStatus.toast = text ? text : "";
     gStatus.toastSeq++;
-}
-
-void publishEsp(const std::vector<EspMark>& marks, const std::vector<float>& lines) {
-    std::lock_guard<std::mutex> l(gMutex);
-    gEsp = marks;
-    gEspLines = lines;
-    gEspAt = steadyMs();
-}
-
-std::vector<EspMark> currentEsp(std::vector<float>* lines) {
-    std::lock_guard<std::mutex> l(gMutex);
-    if (steadyMs() - gEspAt > 400) {
-        if (lines) lines->clear();
-        return {};
-    }
-    if (lines) *lines = gEspLines;
-    return gEsp;
 }
 
 void setTouch(const Touch& t) {
@@ -267,6 +249,14 @@ void fields(UiSettings& ui, FxSettings& fx, std::vector<Field>& out) {
     FB("perfAdaptive", fx.adaptive);
     FI("perfAdaptT", fx.adaptTarget, 0, 2);
     FB("perfAuto", fx.autoClean);
+    FB("espItems", fx.espItems);
+    FB("espEnemies", fx.espEnemies);
+    FB("espWalls", fx.espWalls);
+    FI("espItemColor", fx.espItemColor, 0, 7);
+    FI("espEnemyColor", fx.espEnemyColor, 0, 7);
+    FF("espItemWidth", fx.espItemWidth, 1.f, 8.f);
+    FF("espEnemyWidth", fx.espEnemyWidth, 1.f, 8.f);
+
     // ---- cheat tab (the keys of the per-enemy switches are built once, the Field keeps a pointer to them)
     {
         CheatSettings& c = fx.cheat;
@@ -290,16 +280,6 @@ void fields(UiSettings& ui, FxSettings& fx, std::vector<Field>& out) {
         FI("chSpawnItem", c.spawnItem, 0, kItemCount - 1);
         FB("chAutoGrab", c.autoGrab);
         FB("chReachOn", c.longReachOn);    FF("chReach", c.reach, 2.f, 40.f);
-        FB("chEspEnemy", c.espEnemy);
-        FB("chEspEnemyName", c.espEnemyName);
-        FB("chEspEnemyDist", c.espEnemyDist);
-        FB("chEspEnemyOut", c.espEnemyOutline);
-        FF("chEspEnemyMax", c.espEnemyMax, 10.f, 300.f);
-        FB("chEspItem", c.espItem);
-        FB("chEspItemName", c.espItemName);
-        FB("chEspItemDist", c.espItemDist);
-        FB("chEspItemOut", c.espItemOutline);
-        FF("chEspItemMax", c.espItemMax, 10.f, 300.f);
     }
 #undef FB
 #undef FF

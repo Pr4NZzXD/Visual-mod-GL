@@ -45,19 +45,19 @@ inline constexpr bool kEnemyCan[kEnemyCount][3] = {
 // the Kill button: some enemies cannot die, they are stunned or knocked out (that is what the game's own weapons do)
 inline constexpr const char* kEnemyKill[kEnemyCount] = {"Kill", "Kill", "Stun", "Kill", "Kill", "Kill", "Knock out"};
 
-// One thing the ESP draws. The main thread works it out (it is the only one that may ask the game), the render thread
-// draws it. x, y, w, h are fractions of the screen (0..1, origin top-left); the box is centred on x, y.
-struct EspMark {
-    float x = 0.f, y = 0.f, w = 0.f, h = 0.f;
-    float dist = 0.f;     // metres from the camera
-    bool enemy = false;   // false = item
-    char name[28] = {0};
-    int lineStart = 0;    // the outline of its real shape: lineCount segments, from lineStart, in the shared line list
-    int lineCount = 0;    // 0 = no shape (the mesh cannot be read): the box is drawn instead
+
+// The outline ESP (esp.cpp): the game's own Outline component draws it. 8 colours (RGBA) to choose from.
+inline constexpr float kEspColors[8][4] = {
+    {0.20f, 1.00f, 0.35f, 1.f},  // green
+    {1.00f, 0.25f, 0.22f, 1.f},  // red
+    {1.00f, 0.90f, 0.15f, 1.f},  // yellow
+    {0.15f, 0.90f, 1.00f, 1.f},  // cyan
+    {0.25f, 0.45f, 1.00f, 1.f},  // blue
+    {1.00f, 0.30f, 0.90f, 1.f},  // magenta
+    {1.00f, 0.55f, 0.10f, 1.f},  // orange
+    {1.00f, 1.00f, 1.00f, 1.f},  // white
 };
-// lines: x1, y1, x2, y2 per segment, same fractions of the screen as the marks
-void publishEsp(const std::vector<EspMark>& marks, const std::vector<float>& lines);
-std::vector<EspMark> currentEsp(std::vector<float>* lines);  // empty when the last frame is older than 400 ms
+inline constexpr const char* kEspColorNames[8] = {"Green", "Red", "Yellow", "Cyan", "Blue", "Magenta", "Orange", "White"};
 
 // What the Cheat tab switches. The menu writes it, the main thread reads it (cheat::tick).
 // Counters (killReq, spawnReq) work like cleanReq: the menu raises them, the main thread does the job once per change.
@@ -87,13 +87,6 @@ struct CheatSettings {
     bool autoGrab = false;
     bool longReachOn = false;     float reach = 10.f;      // metres, 2 .. 40
 
-    // ---- ESP
-    bool espEnemy = false;
-    bool espEnemyName = true, espEnemyDist = true, espEnemyOutline = true;
-    float espEnemyMax = 80.f;     // metres, 10 .. 300
-    bool espItem = false;
-    bool espItemName = true, espItemDist = true, espItemOutline = true;
-    float espItemMax = 40.f;      // metres, 10 .. 300
 };
 
 // Everything the main thread needs from the menu: screen effects, fog and performance options.
@@ -153,6 +146,12 @@ struct FxSettings {
     bool autoClean = false;
     int cleanReq = 0;                                        // raised by the "Clean memory now" button
 
+    // ---- ESP (outlines that follow the shape, drawn by the game's own Outline component)
+    bool espItems = false, espEnemies = false;
+    bool espWalls = true;                       // also through walls (false: only where you can see them)
+    int espItemColor = 0, espEnemyColor = 1;    // index into kEspColors
+    float espItemWidth = 3.f, espEnemyWidth = 3.f;  // 1 .. 8
+
     // ---- the Cheat tab
     CheatSettings cheat;
 };
@@ -164,6 +163,7 @@ struct MainStatus {
     std::string resolution;
     std::string scene;              // what the dark-scene options found (lights, cameras)
     std::string cheat = "Cheat: waiting for the game to start.";
+    std::string esp;                // what the outline ESP found
     int screenW = 0, screenH = 0;   // the size the game renders at now
     int toastSeq = 0;
     std::string toast;
@@ -207,6 +207,7 @@ FxSettings currentFx();
 void setVisualStatus(const std::string& s);
 void setSceneStatus(const std::string& s);
 void setCheatStatus(const std::string& s);
+void setEspStatus(const std::string& s);
 void setPerfStatus(const std::string& perf, const std::string& resolution, int screenW, int screenH);
 MainStatus currentStatus();
 void postToast(const char* text);  // a short message in the footer of the panel
