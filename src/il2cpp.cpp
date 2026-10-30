@@ -50,6 +50,7 @@ bool load(void* handle) {
     NEED(thread_attach, "il2cpp_thread_attach");
     NEED(gchandle_new, "il2cpp_gchandle_new");
     NEED(array_length, "il2cpp_array_length");
+    sym(handle, "il2cpp_field_get_type", reinterpret_cast<void**>(&A.field_get_type), true);
     sym(handle, "il2cpp_gc_wbarrier_set_field", reinterpret_cast<void**>(&A.gc_wbarrier_set_field), true);
     sym(handle, "il2cpp_class_get_name", reinterpret_cast<void**>(&A.class_get_name), true);
     sym(handle, "il2cpp_class_get_parent", reinterpret_cast<void**>(&A.class_get_parent), true);
@@ -131,6 +132,28 @@ void* unbox(Il2CppObject* o) { return o ? A.object_unbox(o) : nullptr; }
 size_t fieldOffset(Il2CppClass* k, const char* name) {
     FieldInfo* f = A.class_get_field_from_name(k, name);
     return f ? A.field_get_offset(f) : 0;
+}
+
+size_t fieldChecked(Il2CppClass* k, const char* owner, const char* name, int want) {
+    if (!k) return 0;
+    FieldInfo* f = A.class_get_field_from_name(k, name);
+    if (!f) {
+        vm::logf("field %s.%s: not found", owner, name);
+        return 0;
+    }
+    size_t off = A.field_get_offset(f);
+    if (!off) return 0;
+    if (A.field_get_type && A.type_get_type) {
+        int t = A.type_get_type(A.field_get_type(f));
+        // reference types: string, class, generic instance, object, array
+        bool isRef = t == 0x0e || t == 0x12 || t == 0x15 || t == 0x1c || t == 0x1d;
+        bool ok = want == kTypeRef ? isRef : t == want;
+        if (!ok) {
+            vm::logf("field %s.%s: type %#x, expected %#x: not used", owner, name, t, want == kTypeRef ? 0x12 : want);
+            return 0;
+        }
+    }
+    return off;
 }
 
 std::string str(Il2CppString* s) {

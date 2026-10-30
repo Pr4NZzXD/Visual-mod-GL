@@ -1,5 +1,6 @@
 #include "shared.h"
 
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -16,6 +17,12 @@ static FxSettings gFx;
 static unsigned gFxVersion = 1;
 static MainStatus gStatus;
 static Touch gTouch;
+static std::vector<EspMark> gEsp;
+static int64_t gEspAt = 0;
+
+static int64_t steadyMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
 
 std::atomic<bool> gBlockTouch{false};
 static std::atomic<float> gMeasuredFps{0.f};
@@ -51,6 +58,11 @@ void setSceneStatus(const std::string& s) {
     gStatus.scene = s;
 }
 
+void setCheatStatus(const std::string& s) {
+    std::lock_guard<std::mutex> l(gMutex);
+    gStatus.cheat = s;
+}
+
 void setPerfStatus(const std::string& perf, const std::string& resolution, int screenW, int screenH) {
     std::lock_guard<std::mutex> l(gMutex);
     gStatus.perf = perf;
@@ -68,6 +80,18 @@ void postToast(const char* text) {
     std::lock_guard<std::mutex> l(gMutex);
     gStatus.toast = text ? text : "";
     gStatus.toastSeq++;
+}
+
+void publishEsp(const std::vector<EspMark>& marks) {
+    std::lock_guard<std::mutex> l(gMutex);
+    gEsp = marks;
+    gEspAt = steadyMs();
+}
+
+std::vector<EspMark> currentEsp() {
+    std::lock_guard<std::mutex> l(gMutex);
+    if (steadyMs() - gEspAt > 400) return {};
+    return gEsp;
 }
 
 void setTouch(const Touch& t) {
@@ -167,8 +191,10 @@ void fields(UiSettings& ui, FxSettings& fx, std::vector<Field>& out) {
     out.push_back({"accent", kHex, ui.accent, 0.f, 0.f});
     out.push_back({"bg", kHex, ui.bg, 0.f, 0.f});
     FB("open", ui.open);
-    FI("tab", ui.tab, 0, 5);
+    FI("tab", ui.tab, 0, 6);
     FI("colorSub", ui.colorSub, 0, 3);
+    FI("cheatSub", ui.cheatSub, 0, 3);
+    FI("cheatEnemy", ui.cheatEnemy, 0, kEnemyCount - 1);
     FB("showFps", ui.showFps);
     FB("showGraph", ui.showGraph);
     FF("fpsX", ui.fpsX, -1.f, 20000.f);
@@ -235,6 +261,40 @@ void fields(UiSettings& ui, FxSettings& fx, std::vector<Field>& out) {
     FB("perfAdaptive", fx.adaptive);
     FI("perfAdaptT", fx.adaptTarget, 0, 2);
     FB("perfAuto", fx.autoClean);
+    // ---- cheat tab (the keys of the per-enemy switches are built once, the Field keeps a pointer to them)
+    {
+        CheatSettings& c = fx.cheat;
+        FB("chGod", c.godMode);
+        FB("chSpeedOn", c.speedOn);        FF("chSpeed", c.speed, 1.f, 6.f);
+        FB("chNoclip", c.noclip);
+        FB("chNoFall", c.noFallDamage);
+        FB("chNoCrack", c.noCrackFloor);
+        FB("chAmmo", c.infAmmo);
+        FB("chSpray", c.infSpray);
+        FB("chNoTrap", c.noTrap);
+        static char enemyKeys[kEnemyCount][3][24];
+        for (int i = 0; i < kEnemyCount; i++) {
+            snprintf(enemyKeys[i][0], sizeof(enemyKeys[i][0]), "chFreeze%d", i);
+            snprintf(enemyKeys[i][1], sizeof(enemyKeys[i][1]), "chBlind%d", i);
+            snprintf(enemyKeys[i][2], sizeof(enemyKeys[i][2]), "chDeaf%d", i);
+            FB(enemyKeys[i][0], c.enemy[i].freeze);
+            FB(enemyKeys[i][1], c.enemy[i].blind);
+            FB(enemyKeys[i][2], c.enemy[i].deaf);
+        }
+        FI("chSpawnItem", c.spawnItem, 0, kItemCount - 1);
+        FB("chAutoGrab", c.autoGrab);
+        FB("chReachOn", c.longReachOn);    FF("chReach", c.reach, 2.f, 40.f);
+        FB("chEspEnemy", c.espEnemy);
+        FB("chEspEnemyName", c.espEnemyName);
+        FB("chEspEnemyDist", c.espEnemyDist);
+        FB("chEspEnemyOut", c.espEnemyOutline);
+        FF("chEspEnemyMax", c.espEnemyMax, 10.f, 300.f);
+        FB("chEspItem", c.espItem);
+        FB("chEspItemName", c.espItemName);
+        FB("chEspItemDist", c.espItemDist);
+        FB("chEspItemOut", c.espItemOutline);
+        FF("chEspItemMax", c.espItemMax, 10.f, 300.f);
+    }
 #undef FB
 #undef FF
 #undef FI

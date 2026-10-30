@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cfloat>
 #include <chrono>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -75,8 +76,9 @@ const Palette kFilterPalette = {{1.00f, 1.00f, 1.00f}, {1.00f, 0.35f, 0.35f}, {1
 const Palette kFogPalette = {{0.60f, 0.60f, 0.65f}, {1.00f, 1.00f, 1.00f}, {0.00f, 0.00f, 0.00f}, {0.80f, 0.10f, 0.10f},
                              {0.95f, 0.50f, 0.10f}, {0.10f, 0.60f, 0.20f}, {0.15f, 0.30f, 0.90f}, {0.50f, 0.15f, 0.70f}};
 
-const std::vector<std::string> kTabNames = {"General", "Color", "Effects", "Advanced", "Performance", "Settings"};
-const char* kPageTitles[] = {"GENERAL", "COLOR GRADING", "VISUAL EFFECTS", "ADVANCED", "PERFORMANCE", "MENU SETTINGS"};
+const std::vector<std::string> kTabNames = {"General", "Color", "Effects", "Advanced", "Performance", "Settings", "Cheat"};
+const char* kPageTitles[] = {"GENERAL", "COLOR GRADING", "VISUAL EFFECTS", "ADVANCED", "PERFORMANCE", "MENU SETTINGS", "CHEAT"};
+const std::vector<std::string> kCheatSub = {"Player", "Enemies", "Items", "ESP"};
 const std::vector<std::string> kColorSub = {"Basic", "Temperature", "Tint", "RGB"};
 const std::vector<std::string> kPresetNames = {"Default", "Warm", "Cold", "Vivid", "Cinematic", "Noir",
                                                "Night", "VHS", "Dreamy", "Horror", "Golden", "Sepia"};
@@ -92,6 +94,7 @@ const std::vector<std::string> kTargetNames = {"30 FPS", "45 FPS", "60 FPS"};
 
 // ================================================================ colours
 float clampf(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); }
+int clampi(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
 float lerpf(float a, float b, float t) { return a + (b - a) * t; }
 
 Col shade(Col c, float d) { return Col(clampf(c.x + d, 0, 1), clampf(c.y + d, 0, 1), clampf(c.z + d, 0, 1), c.w); }
@@ -192,6 +195,43 @@ void text(float x, float y, float w, float h, const std::string& t, float size, 
     D->AddText(gFont, size, ImVec2(px, py), U(c), t.c_str(), nullptr, wrap ? w : 0.f);
     if (bold) D->AddText(gFont, size, ImVec2(px + size * 0.04f, py), U(c), t.c_str(), nullptr, wrap ? w : 0.f);
     if (clip) D->PopClipRect();
+}
+
+// ---- ESP: boxes with name and distance, drawn under the menu. The game side (cheat.cpp) works out where things are.
+void drawEsp() {
+    const CheatSettings& c = fx.cheat;
+    if (!c.espEnemy && !c.espItem) return;
+    std::vector<EspMark> marks = currentEsp();
+    float size = fsz(10.5f);
+    float line = std::max(1.5f, 1.6f * S);
+    for (const EspMark& m : marks) {
+        bool en = m.enemy;
+        if (en ? !c.espEnemy : !c.espItem) continue;
+        bool showName = en ? c.espEnemyName : c.espItemName;
+        bool showDist = en ? c.espEnemyDist : c.espItemDist;
+        bool showBox = en ? c.espEnemyOutline : c.espItemOutline;
+        Col col = en ? Col(1.f, 0.30f, 0.30f, 1.f) : Col(1.f, 0.86f, 0.25f, 1.f);
+
+        float bw = std::max(m.w * W, 6.f * S), bh = std::max(m.h * H, 6.f * S);
+        float x0 = m.x * W - bw * 0.5f, y0 = m.y * H - bh * 0.5f;
+        if (showBox) {
+            D->AddRect(ImVec2(x0 - 1.f, y0 - 1.f), ImVec2(x0 + bw + 1.f, y0 + bh + 1.f), U(Col(0.f, 0.f, 0.f, 0.7f)), 0.f, 0, line + 2.f);
+            D->AddRect(ImVec2(x0, y0), ImVec2(x0 + bw, y0 + bh), U(col), 0.f, 0, line);
+        }
+        std::string label;
+        if (showName) label = m.name;
+        if (showDist) {
+            char d[24];
+            snprintf(d, sizeof(d), "%.0fm", m.dist);
+            label += label.empty() ? d : std::string(" ") + d;
+        }
+        if (!label.empty()) {
+            float lw = 170.f * S, lh = size + 4.f * S;
+            float lx = m.x * W - lw * 0.5f, ly = y0 - lh - 1.f * S;
+            text(lx + 1.f, ly + 1.f, lw, lh, label, size, Col(0.f, 0.f, 0.f, 0.85f), Center, true);
+            text(lx, ly, lw, lh, label, size, col, Center, true);
+        }
+    }
 }
 
 Col whiteA(float a) { return Col(1.f, 1.f, 1.f, a); }
@@ -607,6 +647,7 @@ void resetValues() {
     d.ambientOn = fx.ambientOn; d.ambient = fx.ambient; d.lightBoostOn = fx.lightBoostOn; d.lightBoost = fx.lightBoost;
     d.fovOn = fx.fovOn; d.fov = fx.fov; d.adaptive = fx.adaptive; d.adaptTarget = fx.adaptTarget;
     d.aaMode = fx.aaMode; d.anisoMode = fx.anisoMode; d.lodOn = fx.lodOn; d.lodBias = fx.lodBias;
+    d.cheat = fx.cheat;  // the Cheat tab has nothing to do with the look: presets and "Reset" leave it alone
     fx = d;
 }
 
@@ -837,6 +878,99 @@ void pagePerf() {
     caption(st.perf.empty() ? "Nothing changed yet." : st.perf, 4);
 }
 
+// ---- Cheat tab
+void cheatPlayer() {
+    CheatSettings& c = fx.cheat;
+    section("SURVIVAL");
+    toggle("God mode", c.godMode, [](bool v) { fx.cheat.godMode = v; });
+    caption("Enemies cannot attack you.");
+    toggle("No fall damage", c.noFallDamage, [](bool v) { fx.cheat.noFallDamage = v; });
+    toggle("No trap", c.noTrap, [](bool v) { fx.cheat.noTrap = v; });
+    toggle("No cracking floor", c.noCrackFloor, [](bool v) { fx.cheat.noCrackFloor = v; });
+    section("MOVEMENT");
+    fxRow("Speed", c.speedOn, [](bool v) { fx.cheat.speedOn = v; }, c.speed, 1.f, 6.f, 0.1f, "0.0",
+          [](float v) { fx.cheat.speed = v; });
+    caption("1.0 is the normal walking speed.");
+    toggle("No clip", c.noclip, [](bool v) { fx.cheat.noclip = v; });
+    caption("Walk through walls. Look up and walk forward to rise, look down to sink. Strafing keeps the height.", 2);
+    section("WEAPONS");
+    toggle("Infinite ammo", c.infAmmo, [](bool v) { fx.cheat.infAmmo = v; });
+    toggle("Infinite spray", c.infSpray, [](bool v) { fx.cheat.infSpray = v; });
+}
+
+void cheatEnemies() {
+    CheatSettings& c = fx.cheat;
+    int e = clampi(ui.cheatEnemy, 0, kEnemyCount - 1);
+    const std::vector<std::string> row1(kEnemyNames, kEnemyNames + 4), row2(kEnemyNames + 4, kEnemyNames + kEnemyCount);
+    section("ENEMY");
+    segments(row1, e < 4 ? e : -1, [](int i) { ui.cheatEnemy = i; }, 0.9f);
+    segments(row2, e >= 4 ? e - 4 : -1, [](int i) { ui.cheatEnemy = i + 4; }, 0.9f);
+    std::string name = kEnemyNames[e];
+    std::string up = name;
+    for (char& ch : up) ch = (char)toupper((unsigned char)ch);
+    section(up);
+    // every enemy has its own set: only what the game really has for it is shown
+    toggle("Freeze", c.enemy[e].freeze, [e](bool v) { fx.cheat.enemy[e].freeze = v; });
+    caption(name + " cannot move.");
+    if (kEnemyCan[e][1]) {
+        toggle("Blind", c.enemy[e].blind, [e](bool v) { fx.cheat.enemy[e].blind = v; });
+        caption(name + " cannot see you.");
+    }
+    if (kEnemyCan[e][2]) {
+        toggle("Deaf", c.enemy[e].deaf, [e](bool v) { fx.cheat.enemy[e].deaf = v; });
+        caption(name + " hears nothing: no cracking floor, no dropped items.", 2);
+    }
+    if (!kEnemyCan[e][1] || !kEnemyCan[e][2]) {
+        std::string miss = !kEnemyCan[e][1] && !kEnemyCan[e][2] ? "Blind and Deaf are" : (!kEnemyCan[e][1] ? "Blind is" : "Deaf is");
+        caption(miss + " not available for " + name + ": the game has no such behaviour for it.", 2);
+    }
+    button(std::string(kEnemyKill[e]) + " " + name, [e] { fx.cheat.killReq[e]++; });
+    if (e == 2) caption("Mom Spider cannot die: this stuns her, like the game's own weapons.", 2);
+    if (e == 6) caption("The Little One cannot die: this knocks it out, like the game's own weapons.", 2);
+}
+
+void cheatItems() {
+    CheatSettings& c = fx.cheat;
+    int sel = clampi(c.spawnItem, 0, kItemCount - 1);
+    section("SPAWN ITEMS");
+    slider("Item", (float)(sel + 1), 1.f, (float)kItemCount, 1.f, "0", [](float v) { fx.cheat.spawnItem = (int)std::lround(v) - 1; });
+    caption(std::string("Selected: ") + kItemNames[sel]);
+    button("Spawn item", [] { fx.cheat.spawnReq++; });
+    section("PICK UP");
+    toggle("Auto grab items", c.autoGrab, [](bool v) { fx.cheat.autoGrab = v; });
+    caption("Picks up the items around you by itself.");
+    fxRow("Long reach", c.longReachOn, [](bool v) { fx.cheat.longReachOn = v; }, c.reach, 2.f, 40.f, 1.f, "0",
+          [](float v) { fx.cheat.reach = v; });
+    caption("Items, doors and everything you can interact with work from far away. The slider is the distance in metres.", 2);
+}
+
+void cheatEsp() {
+    CheatSettings& c = fx.cheat;
+    section("ENEMY ESP");
+    toggle("Enemy ESP", c.espEnemy, [](bool v) { fx.cheat.espEnemy = v; });
+    toggle("Name", c.espEnemyName, [](bool v) { fx.cheat.espEnemyName = v; });
+    toggle("Distance", c.espEnemyDist, [](bool v) { fx.cheat.espEnemyDist = v; });
+    toggle("Outline", c.espEnemyOutline, [](bool v) { fx.cheat.espEnemyOutline = v; });
+    slider("Max distance", c.espEnemyMax, 10.f, 300.f, 5.f, "0", [](float v) { fx.cheat.espEnemyMax = v; });
+    section("ITEM ESP");
+    toggle("Item ESP", c.espItem, [](bool v) { fx.cheat.espItem = v; });
+    toggle("Name", c.espItemName, [](bool v) { fx.cheat.espItemName = v; });
+    toggle("Distance", c.espItemDist, [](bool v) { fx.cheat.espItemDist = v; });
+    toggle("Outline", c.espItemOutline, [](bool v) { fx.cheat.espItemOutline = v; });
+    slider("Max distance", c.espItemMax, 10.f, 300.f, 5.f, "0", [](float v) { fx.cheat.espItemMax = v; });
+}
+
+void pageCheat() {
+    segments(kCheatSub, ui.cheatSub, [](int i) { ui.cheatSub = i; scroll = 0.f; }, 0.85f);
+    if (!st.cheat.empty()) caption(st.cheat, 3);
+    switch (ui.cheatSub) {
+        case 0: cheatPlayer(); break;
+        case 1: cheatEnemies(); break;
+        case 2: cheatItems(); break;
+        default: cheatEsp(); break;
+    }
+}
+
 void resetLook() {
     ui.scale = 1.f;
     gScaleDraft = 1.f;
@@ -907,7 +1041,9 @@ void drawPanel() {
 
     float tx = x + 10.f * s, tw = sbW - 12.f * s, th = 32.f * s;
     float ty = y + hdrH + 4.f * s;
-    for (int i = 0; i < 5; i++) drawTab(i, tx, ty + i * (th + 4.f * s), tw, th, acc);
+    // the tab list: General .. Performance, then Cheat (tab 6). Settings (tab 5) sits at the bottom.
+    const int kTopTabs[6] = {0, 1, 2, 3, 4, 6};
+    for (int i = 0; i < 6; i++) drawTab(kTopTabs[i], tx, ty + i * (th + 4.f * s), tw, th, acc);
     float sy = y + ph - 12.f * s - th;
     fill(tx + 4.f * s, sy - 8.f * s, tw - 8.f * s, 1.f * s, Col(1.f, 1.f, 1.f, 0.10f));
     drawTab(5, tx, sy, tw, th, acc);
@@ -936,6 +1072,7 @@ void drawPanel() {
         case 2: pageEffects(); break;
         case 3: pageAdvanced(); break;
         case 4: pagePerf(); break;
+        case 6: pageCheat(); break;
         default: pageUi(); break;
     }
     contentH = (cy + scroll) - cTop;
@@ -1231,6 +1368,7 @@ void menuFrame(int w, int h) {
     ImGui::NewFrame();
     D = ImGui::GetForegroundDrawList();
     hits.clear();
+    drawEsp();
     drawFps();
     drawEye();
     if (ui.open) drawPanel();

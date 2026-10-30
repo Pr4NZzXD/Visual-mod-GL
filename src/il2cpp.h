@@ -34,6 +34,7 @@ struct Api {
     int (*type_get_type)(const Il2CppType*);
     FieldInfo* (*class_get_field_from_name)(Il2CppClass*, const char*);
     size_t (*field_get_offset)(FieldInfo*);
+    const Il2CppType* (*field_get_type)(FieldInfo*);  // optional: used to check a field before it is written
     Il2CppObject* (*runtime_invoke)(const MethodInfo*, void*, void**, Il2CppException**);
     Il2CppObject* (*object_new)(Il2CppClass*);
     void* (*object_unbox)(Il2CppObject*);
@@ -72,6 +73,11 @@ Il2CppObject* typeObject(Il2CppClass* k);  // System.Type of a class
 Il2CppClass* classOf(Il2CppObject* o);
 void* unbox(Il2CppObject* o);
 size_t fieldOffset(Il2CppClass* k, const char* name);  // 0 when missing
+
+// Offset of a field, but only when the field has the type the code expects (the il2cpp type numbers below, or kTypeRef for
+// any reference). A wrong guess would write garbage into the game, so on a mismatch it returns 0 and logs why.
+constexpr int kTypeBool = 0x02, kTypeI4 = 0x08, kTypeR4 = 0x0c, kTypeValue = 0x11, kTypeRef = -1;
+size_t fieldChecked(Il2CppClass* k, const char* owner, const char* name, int want);
 
 // ---- helpers used by the fog / performance code
 std::string str(Il2CppString* s);                  // managed string -> UTF-8 ("" for null)
