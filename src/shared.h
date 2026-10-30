@@ -33,6 +33,17 @@ struct FxSettings {
     bool chromaOn = false;    float chroma = 0.3f;           // 0 .. 1
     bool lensOn = false;      float lens = 20.f;             // -100 .. 100
 
+    // ---- ambient occlusion
+    bool aoOn = false;        float aoIntensity = 1.0f;
+                              float aoRadius = 0.5f;
+                              int aoQuality = 0;
+
+    // ---- depth of field
+    bool dofOn = false;       float dofFocus = 10.0f;
+                              float dofAperture = 5.6f;
+                              float dofLength = 50.0f;
+                              int dofQuality = 0;
+
     // ---- dark scenes
     bool ambientOn = false;   float ambient = 30.f;          // 0 .. 100 % flat ambient light
     bool lightBoostOn = false; float lightBoost = 1.5f;      // 1 .. 3 times the intensity of every light
@@ -50,6 +61,9 @@ struct FxSettings {
 
     // ---- performance
     int perfLevel = 0;                                       // 0 off, 1 low, 2 ultra low
+    int aaMode = 0;                                          // anti-aliasing mode
+    int anisoMode = 0;                                       // anisotropic filtering mode
+    bool lodOn = false;       float lodBias = 1.0f;          // LOD bias control
     bool noTextures = false, hideParticles = false, noPostFx = false, noShadow = false;
     bool drawDistOn = false;  float drawDist = 80.f;         // 20 .. 300
     int resIndex = 0;                                        // index into the percentage list
