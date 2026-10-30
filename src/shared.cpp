@@ -1,5 +1,6 @@
 #include "shared.h"
 
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -16,6 +17,13 @@ static FxSettings gFx;
 static unsigned gFxVersion = 1;
 static MainStatus gStatus;
 static Touch gTouch;
+static std::vector<EspMark> gEsp;
+static std::vector<float> gEspLines;
+static int64_t gEspAt = 0;
+
+static int64_t steadyMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
 
 std::atomic<bool> gBlockTouch{false};
 static std::atomic<float> gMeasuredFps{0.f};
@@ -46,14 +54,14 @@ void setVisualStatus(const std::string& s) {
     gStatus.visual = s;
 }
 
-void setEspStatus(const std::string& s) {
-    std::lock_guard<std::mutex> l(gMutex);
-    gStatus.esp = s;
-}
-
 void setSceneStatus(const std::string& s) {
     std::lock_guard<std::mutex> l(gMutex);
     gStatus.scene = s;
+}
+
+void setCheatStatus(const std::string& s) {
+    std::lock_guard<std::mutex> l(gMutex);
+    gStatus.cheat = s;
 }
 
 void setPerfStatus(const std::string& perf, const std::string& resolution, int screenW, int screenH) {
@@ -73,6 +81,23 @@ void postToast(const char* text) {
     std::lock_guard<std::mutex> l(gMutex);
     gStatus.toast = text ? text : "";
     gStatus.toastSeq++;
+}
+
+void publishEsp(const std::vector<EspMark>& marks, const std::vector<float>& lines) {
+    std::lock_guard<std::mutex> l(gMutex);
+    gEsp = marks;
+    gEspLines = lines;
+    gEspAt = steadyMs();
+}
+
+std::vector<EspMark> currentEsp(std::vector<float>* lines) {
+    std::lock_guard<std::mutex> l(gMutex);
+    if (steadyMs() - gEspAt > 400) {
+        if (lines) lines->clear();
+        return {};
+    }
+    if (lines) *lines = gEspLines;
+    return gEsp;
 }
 
 void setTouch(const Touch& t) {
@@ -174,6 +199,8 @@ void fields(UiSettings& ui, FxSettings& fx, std::vector<Field>& out) {
     FB("open", ui.open);
     FI("tab", ui.tab, 0, 6);
     FI("colorSub", ui.colorSub, 0, 3);
+    FI("cheatSub", ui.cheatSub, 0, 3);
+    FI("cheatEnemy", ui.cheatEnemy, 0, kEnemyCount - 1);
     FB("showFps", ui.showFps);
     FB("showGraph", ui.showGraph);
     FF("fpsX", ui.fpsX, -1.f, 20000.f);
@@ -204,14 +231,17 @@ void fields(UiSettings& ui, FxSettings& fx, std::vector<Field>& out) {
     FF("visGrainSz", fx.grainSize, 0.3f, 3.f);
     FB("visChrOn", fx.chromaOn);       FF("visChr", fx.chroma, 0.f, 1.f);
     FB("visLensOn", fx.lensOn);        FF("visLens", fx.lens, -100.f, 100.f);
+    FB("visAoOn", fx.aoOn);            FF("visAo", fx.aoIntensity, 0.f, 4.f);
+    FF("visAoRad", fx.aoRadius, 0.05f, 3.f);
+    FI("visAoQ", fx.aoQuality, 0, 2);
+    FB("visDofOn", fx.dofOn);          FF("visDofFocus", fx.dofFocus, 0.5f, 50.f);
+    FF("visDofAp", fx.dofAperture, 1.f, 32.f);
+    FF("visDofLen", fx.dofLength, 10.f, 300.f);
+    FI("visDofQ", fx.dofQuality, 0, 2);
     // ---- dark scenes
     FB("ambOn", fx.ambientOn);         FF("amb", fx.ambient, 0.f, 100.f);
     FB("lightOn", fx.lightBoostOn);    FF("lightMul", fx.lightBoost, 1.f, 3.f);
     FB("fovOn", fx.fovOn);             FF("fov", fx.fov, 40.f, 110.f);
-    // ---- ESP
-    FB("espItems", fx.espItems);       FI("espItemCol", fx.espItemColor, 0, 7);   FF("espItemW", fx.espItemWidth, 1.f, 10.f);
-    FB("espEnemies", fx.espEnemies);   FI("espEnemyCol", fx.espEnemyColor, 0, 7); FF("espEnemyW", fx.espEnemyWidth, 1.f, 10.f);
-    FB("espWalls", fx.espWalls);
     // ---- fog
     FI("fogMode", fx.fogMode, 0, 2);
     FF("fogR", fx.fogR, 0.f, 1.f);
@@ -220,6 +250,9 @@ void fields(UiSettings& ui, FxSettings& fx, std::vector<Field>& out) {
     FF("fogThick", fx.fogThick, 0.f, 100.f);
     // ---- performance
     FI("perfLevel", fx.perfLevel, 0, 2);
+    FI("aaMode", fx.aaMode, 0, 4);
+    FI("anisoMode", fx.anisoMode, 0, 2);
+    FB("lodOn", fx.lodOn);             FF("lodBias", fx.lodBias, 0.3f, 2.f);
     FB("perfNoTex", fx.noTextures);
     FB("perfParticles", fx.hideParticles);
     FB("perfPostFx", fx.noPostFx);
@@ -234,6 +267,40 @@ void fields(UiSettings& ui, FxSettings& fx, std::vector<Field>& out) {
     FB("perfAdaptive", fx.adaptive);
     FI("perfAdaptT", fx.adaptTarget, 0, 2);
     FB("perfAuto", fx.autoClean);
+    // ---- cheat tab (the keys of the per-enemy switches are built once, the Field keeps a pointer to them)
+    {
+        CheatSettings& c = fx.cheat;
+        FB("chGod", c.godMode);
+        FB("chSpeedOn", c.speedOn);        FF("chSpeed", c.speed, 1.f, 6.f);
+        FB("chNoclip", c.noclip);
+        FB("chNoFall", c.noFallDamage);
+        FB("chNoCrack", c.noCrackFloor);
+        FB("chAmmo", c.infAmmo);
+        FB("chSpray", c.infSpray);
+        FB("chNoTrap", c.noTrap);
+        static char enemyKeys[kEnemyCount][3][24];
+        for (int i = 0; i < kEnemyCount; i++) {
+            snprintf(enemyKeys[i][0], sizeof(enemyKeys[i][0]), "chFreeze%d", i);
+            snprintf(enemyKeys[i][1], sizeof(enemyKeys[i][1]), "chBlind%d", i);
+            snprintf(enemyKeys[i][2], sizeof(enemyKeys[i][2]), "chDeaf%d", i);
+            FB(enemyKeys[i][0], c.enemy[i].freeze);
+            FB(enemyKeys[i][1], c.enemy[i].blind);
+            FB(enemyKeys[i][2], c.enemy[i].deaf);
+        }
+        FI("chSpawnItem", c.spawnItem, 0, kItemCount - 1);
+        FB("chAutoGrab", c.autoGrab);
+        FB("chReachOn", c.longReachOn);    FF("chReach", c.reach, 2.f, 40.f);
+        FB("chEspEnemy", c.espEnemy);
+        FB("chEspEnemyName", c.espEnemyName);
+        FB("chEspEnemyDist", c.espEnemyDist);
+        FB("chEspEnemyOut", c.espEnemyOutline);
+        FF("chEspEnemyMax", c.espEnemyMax, 10.f, 300.f);
+        FB("chEspItem", c.espItem);
+        FB("chEspItemName", c.espItemName);
+        FB("chEspItemDist", c.espItemDist);
+        FB("chEspItemOut", c.espItemOutline);
+        FF("chEspItemMax", c.espItemMax, 10.f, 300.f);
+    }
 #undef FB
 #undef FF
 #undef FI

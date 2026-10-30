@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cfloat>
 #include <chrono>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -20,11 +21,6 @@
 // sliders) on ImGui's foreground draw list; the finger is handled here too, with the hit areas the pages register
 // while they are drawn (the next frame matches the finger against those).
 // Runs on the render thread, right before the game presents a frame.
-
-#ifdef HAVE_UI_FONT
-extern const unsigned char kUiFont[];  // Roboto, made into an array by CMake
-extern const unsigned int kUiFontSize;
-#endif
 
 namespace vm {
 namespace {
@@ -55,9 +51,7 @@ float gFrameMs[kGraphN] = {};  // the last frame times, oldest first
 int gFramePos = 0;
 
 ImDrawList* D = nullptr;
-ImFont* gFontS = nullptr;  // for small text (baked small, so it stays sharp)
-ImFont* gFontL = nullptr;  // for large text
-ImFont* fontFor(float size) { return size <= 20.f ? gFontS : gFontL; }
+ImFont* gFont = nullptr;
 
 // layout, computed every frame from the screen size
 float W = 0, H = 0;
@@ -82,10 +76,16 @@ const Palette kFilterPalette = {{1.00f, 1.00f, 1.00f}, {1.00f, 0.35f, 0.35f}, {1
 const Palette kFogPalette = {{0.60f, 0.60f, 0.65f}, {1.00f, 1.00f, 1.00f}, {0.00f, 0.00f, 0.00f}, {0.80f, 0.10f, 0.10f},
                              {0.95f, 0.50f, 0.10f}, {0.10f, 0.60f, 0.20f}, {0.15f, 0.30f, 0.90f}, {0.50f, 0.15f, 0.70f}};
 
-const std::vector<std::string> kTabNames = {"General", "Color", "Effects", "Advanced", "Performance", "ESP", "Settings"};
-const char* kPageTitles[] = {"GENERAL", "COLOR GRADING", "VISUAL EFFECTS", "ADVANCED", "PERFORMANCE", "ESP OUTLINES", "MENU SETTINGS"};
+const std::vector<std::string> kTabNames = {"General", "Color", "Effects", "Advanced", "Performance", "Settings", "Cheat"};
+const char* kPageTitles[] = {"GENERAL", "COLOR GRADING", "VISUAL EFFECTS", "ADVANCED", "PERFORMANCE", "MENU SETTINGS", "CHEAT"};
+const std::vector<std::string> kCheatSub = {"Player", "Enemies", "Items", "ESP"};
 const std::vector<std::string> kColorSub = {"Basic", "Temperature", "Tint", "RGB"};
-const std::vector<std::string> kPresetNames = {"Default", "Warm", "Cold", "Vivid", "Cinematic", "Noir"};
+const std::vector<std::string> kPresetNames = {"Default", "Warm", "Cold", "Vivid", "Cinematic", "Noir",
+                                               "Night", "VHS", "Dreamy", "Horror", "Golden", "Sepia"};
+const std::vector<std::string> kAaNames = {"Game", "Off", "2x", "4x", "8x"};
+const std::vector<std::string> kAnisoNames = {"Game", "Off", "On"};
+const std::vector<std::string> kAoQuality = {"Low", "Medium", "High"};
+const std::vector<std::string> kDofQuality = {"Small", "Medium", "Large"};
 const std::vector<std::string> kFogModes = {"Game default", "No fog", "Custom"};
 const std::vector<std::string> kLevelNames = {"Off", "Low", "Ultra low"};
 const std::vector<std::string> kResNames = {"100%", "75%", "60%", "50%", "35%"};
@@ -94,6 +94,7 @@ const std::vector<std::string> kTargetNames = {"30 FPS", "45 FPS", "60 FPS"};
 
 // ================================================================ colours
 float clampf(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); }
+int clampi(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
 float lerpf(float a, float b, float t) { return a + (b - a) * t; }
 
 Col shade(Col c, float d) { return Col(clampf(c.x + d, 0, 1), clampf(c.y + d, 0, 1), clampf(c.z + d, 0, 1), c.w); }
@@ -179,13 +180,11 @@ void hgrad(float x, float y, float w, float h, Col a, Col b) {
 // ---------------------------------------------------------------- text
 enum Al { Left, Center, Right, UpperLeft };
 
-// text never gets smaller than a readable size, however small the menu is made
 float fsz(float base, float minSize = 12.f) { return std::max(minSize, std::round(base * S)); }
 
 void text(float x, float y, float w, float h, const std::string& t, float size, Col c, Al al, bool bold = false, bool wrap = false) {
     if (c.w <= 0.003f || t.empty()) return;
-    ImFont* font = fontFor(size);
-    ImVec2 ts = font->CalcTextSizeA(size, FLT_MAX, wrap ? w : 0.f, t.c_str());
+    ImVec2 ts = gFont->CalcTextSizeA(size, FLT_MAX, wrap ? w : 0.f, t.c_str());
     float px = x, py = y;
     if (al == Center) px = x + (w - ts.x) * 0.5f;
     else if (al == Right) px = x + w - ts.x;
@@ -193,14 +192,56 @@ void text(float x, float y, float w, float h, const std::string& t, float size, 
     else py = y + (h - ts.y) * 0.5f;
     bool clip = ts.x > w + 0.5f || ts.y > h + 0.5f;
     if (clip) D->PushClipRect(ImVec2(x, y), ImVec2(x + w, y + h), true);
-    if (ui.panelAlpha < 0.85f) {  // a see-through menu: a soft shadow keeps the text readable over the game
-        float so = std::max(1.f, size * 0.07f);
-        float a = c.w * (0.35f + 0.5f * (1.f - ui.panelAlpha / 0.85f));
-        D->AddText(font, size, ImVec2(px + so, py + so), U(Col(0.f, 0.f, 0.f, a)), t.c_str(), nullptr, wrap ? w : 0.f);
-    }
-    D->AddText(font, size, ImVec2(px, py), U(c), t.c_str(), nullptr, wrap ? w : 0.f);
-    if (bold) D->AddText(font, size, ImVec2(px + size * 0.04f, py), U(c), t.c_str(), nullptr, wrap ? w : 0.f);
+    D->AddText(gFont, size, ImVec2(px, py), U(c), t.c_str(), nullptr, wrap ? w : 0.f);
+    if (bold) D->AddText(gFont, size, ImVec2(px + size * 0.04f, py), U(c), t.c_str(), nullptr, wrap ? w : 0.f);
     if (clip) D->PopClipRect();
+}
+
+// ---- ESP: boxes with name and distance, drawn under the menu. The game side (cheat.cpp) works out where things are.
+void drawEsp() {
+    const CheatSettings& c = fx.cheat;
+    if (!c.espEnemy && !c.espItem) return;
+    std::vector<float> lines;
+    std::vector<EspMark> marks = currentEsp(&lines);
+    float size = fsz(12.5f, 12.f);
+    float line = std::max(1.5f, 1.5f * S);
+    for (const EspMark& m : marks) {
+        bool en = m.enemy;
+        if (en ? !c.espEnemy : !c.espItem) continue;
+        bool showName = en ? c.espEnemyName : c.espItemName;
+        bool showDist = en ? c.espEnemyDist : c.espItemDist;
+        bool showBox = en ? c.espEnemyOutline : c.espItemOutline;
+        Col col = en ? Col(1.f, 0.30f, 0.28f, 1.f) : Col(0.25f, 1.f, 0.45f, 1.f);
+
+        float bw = std::max(m.w * W, 6.f * S), bh = std::max(m.h * H, 6.f * S);
+        float x0 = m.x * W - bw * 0.5f, y0 = m.y * H - bh * 0.5f;
+        if (showBox) {
+            if (m.lineCount > 0 && (size_t)(m.lineStart + m.lineCount) * 4 <= lines.size()) {
+                // the real shape: the edges of the model where its surface turns away from you
+                ImU32 u = U(col);
+                const float* l = lines.data() + (size_t)m.lineStart * 4;
+                for (int i = 0; i < m.lineCount; i++, l += 4)
+                    D->AddLine(ImVec2(l[0] * W, l[1] * H), ImVec2(l[2] * W, l[3] * H), u, line);
+            } else {
+                // no readable mesh: a box
+                D->AddRect(ImVec2(x0 - 1.f, y0 - 1.f), ImVec2(x0 + bw + 1.f, y0 + bh + 1.f), U(Col(0.f, 0.f, 0.f, 0.7f)), 0.f, 0, line + 2.f);
+                D->AddRect(ImVec2(x0, y0), ImVec2(x0 + bw, y0 + bh), U(col), 0.f, 0, line);
+            }
+        }
+        std::string label;
+        if (showName) label = m.name;
+        if (showDist) {
+            char d[24];
+            snprintf(d, sizeof(d), "%.0fm", m.dist);
+            label += label.empty() ? d : std::string(" ") + d;
+        }
+        if (!label.empty()) {
+            float lw = 190.f * S, lh = size + 4.f * S;
+            float lx = m.x * W - lw * 0.5f, ly = y0 - lh - 1.f * S;
+            text(lx + 1.f, ly + 1.f, lw, lh, label, size, Col(0.f, 0.f, 0.f, 0.85f), Center, true);
+            text(lx, ly, lw, lh, label, size, col, Center, true);
+        }
+    }
 }
 
 Col whiteA(float a) { return Col(1.f, 1.f, 1.f, a); }
@@ -208,7 +249,7 @@ void lbl(float x, float y, float w, float h, const std::string& t, Al al, float 
     text(x, y, w, h, t, al == Right ? fsz(11.f) : fsz(11.5f), whiteA(alpha), al);
 }
 void small(float x, float y, float w, float h, const std::string& t, Al al, bool bold = false) {
-    text(x, y, w, h, t, fsz(9.f, 10.5f), Col(0.62f, 0.67f, 0.75f, 1.f), al, bold);
+    text(x, y, w, h, t, fsz(9.f, 10.5f), Col(0.55f, 0.60f, 0.68f, 1.f), al, bold);
 }
 
 std::string fmt(float v, const char* f) {
@@ -473,13 +514,19 @@ void wideFx(const std::string& label, bool on, SetB setOn, float value, float mn
 }
 
 // preset thumbnails: a small landscape in the colours of each look (sky top, sky bottom, hills)
-const float kThumb[6][9] = {
+const float kThumb[12][9] = {
     {0.45f, 0.62f, 0.78f, 0.78f, 0.84f, 0.82f, 0.14f, 0.24f, 0.17f},  // Default
     {0.95f, 0.62f, 0.30f, 1.00f, 0.85f, 0.55f, 0.26f, 0.14f, 0.08f},  // Warm
     {0.18f, 0.33f, 0.60f, 0.55f, 0.76f, 0.90f, 0.07f, 0.12f, 0.20f},  // Cold
     {0.55f, 0.20f, 0.90f, 1.00f, 0.50f, 0.70f, 0.12f, 0.06f, 0.25f},  // Vivid
     {0.10f, 0.30f, 0.40f, 0.90f, 0.60f, 0.35f, 0.05f, 0.08f, 0.10f},  // Cinematic
     {0.20f, 0.20f, 0.21f, 0.70f, 0.70f, 0.72f, 0.04f, 0.04f, 0.05f},  // Noir
+    {0.02f, 0.12f, 0.04f, 0.10f, 0.55f, 0.20f, 0.02f, 0.18f, 0.06f},  // Night vision
+    {0.35f, 0.25f, 0.55f, 0.85f, 0.55f, 0.60f, 0.20f, 0.15f, 0.30f},  // VHS
+    {0.75f, 0.65f, 0.90f, 1.00f, 0.88f, 0.92f, 0.55f, 0.50f, 0.70f},  // Dreamy
+    {0.05f, 0.10f, 0.08f, 0.25f, 0.32f, 0.26f, 0.02f, 0.04f, 0.03f},  // Horror
+    {0.95f, 0.50f, 0.15f, 1.00f, 0.85f, 0.40f, 0.30f, 0.15f, 0.05f},  // Golden hour
+    {0.45f, 0.34f, 0.22f, 0.80f, 0.66f, 0.45f, 0.20f, 0.14f, 0.08f},  // Sepia
 };
 
 void drawThumb(int i, float x, float y, float w, float h) {
@@ -504,22 +551,27 @@ void drawThumb(int i, float x, float y, float w, float h) {
 }
 
 void presets(const std::vector<std::string>& names, int sel, Pick pick) {
-    float h = 78.f * S;
+    const int perRow = 6;
+    int total = (int)names.size();
+    int rows = (total + perRow - 1) / perRow;
+    float rowH = 78.f * S;
+    float h = rowH * rows;
     if (vis(h)) {
-        float y = cy;
-        int n = (int)names.size();
         float gap = 6.f * S;
-        float w = (cw - 12.f * S - (n - 1) * gap) / n;
+        float w = (cw - 12.f * S - (perRow - 1) * gap) / perRow;
         float th = 46.f * S;
-        float x = cx + 6.f * S;
-        for (int i = 0; i < n; i++) {
-            drawThumb(i, x, y + 3.f * S, w, th);
-            if (i == sel) rring(x - 2.f * S, y + 1.f * S, w + 4.f * S, th + 4.f * S, 5.f * S, 2.f * S, accentNow());
-            lbl(x - 4.f * S, y + th + 5.f * S, w + 8.f * S, 18.f * S, names[i], Center, i == sel ? 1.f : 0.75f);
-            Hit& t = newHit(x - 2.f * S, y, w + 4.f * S, th + 24.f * S);
-            t.pick = pick;
-            t.index = i;
-            x += w + gap;
+        for (int r = 0; r < rows; r++) {
+            float y = cy + r * rowH;
+            float x = cx + 6.f * S;
+            for (int i = r * perRow; i < total && i < (r + 1) * perRow; i++) {
+                drawThumb(i, x, y + 3.f * S, w, th);
+                if (i == sel) rring(x - 2.f * S, y + 1.f * S, w + 4.f * S, th + 4.f * S, 5.f * S, 2.f * S, accentNow());
+                lbl(x - 4.f * S, y + th + 5.f * S, w + 8.f * S, 18.f * S, names[i], Center, i == sel ? 1.f : 0.75f);
+                Hit& t = newHit(x - 2.f * S, y, w + 4.f * S, th + 24.f * S);
+                t.pick = pick;
+                t.index = i;
+                x += w + gap;
+            }
         }
     }
     cy += h;
@@ -587,7 +639,7 @@ void button(const std::string& label, Act tap) {
 
 void caption(const std::string& t, int lines = 1) {
     float h = (8.f + 12.f * lines) * S;
-    if (vis(h)) text(cx + 4.f * S, cy, cw - 8.f * S, h, t, fsz(10.f, 11.5f), Col(0.66f, 0.70f, 0.76f, 1.f), UpperLeft, false, true);
+    if (vis(h)) text(cx + 4.f * S, cy, cw - 8.f * S, h, t, fsz(10.f), Col(0.62f, 0.66f, 0.72f, 1.f), UpperLeft, false, true);
     cy += h;
 }
 
@@ -604,6 +656,8 @@ void resetValues() {
     d.squash = fx.squash; d.fpsIndex = fx.fpsIndex; d.autoClean = fx.autoClean; d.cleanReq = fx.cleanReq;
     d.ambientOn = fx.ambientOn; d.ambient = fx.ambient; d.lightBoostOn = fx.lightBoostOn; d.lightBoost = fx.lightBoost;
     d.fovOn = fx.fovOn; d.fov = fx.fov; d.adaptive = fx.adaptive; d.adaptTarget = fx.adaptTarget;
+    d.aaMode = fx.aaMode; d.anisoMode = fx.anisoMode; d.lodOn = fx.lodOn; d.lodBias = fx.lodBias;
+    d.cheat = fx.cheat;  // the Cheat tab has nothing to do with the look: presets and "Reset" leave it alone
     fx = d;
 }
 
@@ -638,6 +692,56 @@ void applyPreset(int i) {
             fx.exposureOn = true; fx.exposure = -0.2f;
             fx.vignetteOn = true; fx.vignette = 0.5f;
             fx.grainOn = true; fx.grain = 0.3f;
+            break;
+        case 6:  // Night vision
+            fx.filterOn = true; fx.fr = 0.40f; fx.fg = 1.00f; fx.fb = 0.45f; fx.filterStrength = 1.f;
+            fx.satOn = true; fx.saturation = -60.f;
+            fx.exposureOn = true; fx.exposure = 0.8f;
+            fx.contrastOn = true; fx.contrast = 15.f;
+            fx.bloomOn = true; fx.bloom = 1.2f; fx.bloomThreshold = 0.6f;
+            fx.vignetteOn = true; fx.vignette = 0.55f; fx.vignetteSmooth = 0.5f;
+            fx.grainOn = true; fx.grain = 0.45f; fx.grainSize = 1.2f;
+            break;
+        case 7:  // VHS
+            fx.satOn = true; fx.saturation = 20.f;
+            fx.contrastOn = true; fx.contrast = -10.f;
+            fx.warmOn = true; fx.temperature = 8.f; fx.tint = 12.f;
+            fx.chromaOn = true; fx.chroma = 0.5f;
+            fx.lensOn = true; fx.lens = 10.f;
+            fx.grainOn = true; fx.grain = 0.35f;
+            fx.vignetteOn = true; fx.vignette = 0.3f;
+            break;
+        case 8:  // Dreamy
+            fx.bloomOn = true; fx.bloom = 3.f; fx.bloomThreshold = 0.5f;
+            fx.satOn = true; fx.saturation = 15.f;
+            fx.exposureOn = true; fx.exposure = 0.3f;
+            fx.contrastOn = true; fx.contrast = -12.f;
+            fx.warmOn = true; fx.temperature = 10.f; fx.tint = 8.f;
+            fx.dofOn = true; fx.dofFocus = 6.f; fx.dofAperture = 5.6f; fx.dofLength = 50.f; fx.dofQuality = 0;
+            break;
+        case 9:  // Horror
+            fx.satOn = true; fx.saturation = -45.f;
+            fx.contrastOn = true; fx.contrast = 25.f;
+            fx.exposureOn = true; fx.exposure = -0.5f;
+            fx.warmOn = true; fx.temperature = -12.f; fx.tint = -12.f;
+            fx.vignetteOn = true; fx.vignette = 0.65f; fx.vignetteSmooth = 0.4f;
+            fx.grainOn = true; fx.grain = 0.35f;
+            fx.aoOn = true; fx.aoIntensity = 1.6f; fx.aoRadius = 0.6f; fx.aoQuality = 1;
+            break;
+        case 10:  // Golden hour
+            fx.warmOn = true; fx.temperature = 45.f; fx.tint = 12.f;
+            fx.exposureOn = true; fx.exposure = 0.2f;
+            fx.satOn = true; fx.saturation = 20.f;
+            fx.contrastOn = true; fx.contrast = 10.f;
+            fx.bloomOn = true; fx.bloom = 1.2f; fx.bloomThreshold = 0.7f;
+            fx.vignetteOn = true; fx.vignette = 0.25f;
+            break;
+        case 11:  // Sepia
+            fx.filterOn = true; fx.fr = 1.00f; fx.fg = 0.82f; fx.fb = 0.55f; fx.filterStrength = 1.f;
+            fx.satOn = true; fx.saturation = -70.f;
+            fx.contrastOn = true; fx.contrast = 12.f;
+            fx.vignetteOn = true; fx.vignette = 0.4f;
+            fx.grainOn = true; fx.grain = 0.2f;
             break;
         default: break;
     }
@@ -717,6 +821,16 @@ void pageAdvanced() {
     section("LENS");
     fxRow("Chromatic", fx.chromaOn, [](bool v) { fx.chromaOn = v; }, fx.chroma, 0.f, 1.f, 0.05f, "0.00", [](float v) { fx.chroma = v; });
     fxRow("Distortion", fx.lensOn, [](bool v) { fx.lensOn = v; }, fx.lens, -100.f, 100.f, 5.f, "0", [](float v) { fx.lens = v; });
+    section("DEPTH");
+    fxRow("Ambient occlusion", fx.aoOn, [](bool v) { fx.aoOn = v; }, fx.aoIntensity, 0.f, 4.f, 0.1f, "0.0", [](float v) { fx.aoIntensity = v; });
+    slider("AO radius", fx.aoRadius, 0.05f, 3.f, 0.05f, "0.00", [](float v) { fx.aoRadius = v; });
+    segments(kAoQuality, fx.aoQuality, [](int i) { fx.aoQuality = i; }, 1.f);
+    caption("Ambient occlusion darkens corners and creases. Higher quality costs more FPS.", 2);
+    fxRow("Depth of field", fx.dofOn, [](bool v) { fx.dofOn = v; }, fx.dofFocus, 0.5f, 50.f, 0.5f, "0.0", [](float v) { fx.dofFocus = v; });
+    slider("Aperture", fx.dofAperture, 1.f, 32.f, 0.5f, "0.0", [](float v) { fx.dofAperture = v; });
+    slider("Focal length", fx.dofLength, 10.f, 300.f, 5.f, "0", [](float v) { fx.dofLength = v; });
+    segments(kDofQuality, fx.dofQuality, [](int i) { fx.dofQuality = i; }, 1.f);
+    caption("Depth of field: the slider is the focus distance in metres. What is farther or closer gets blurry. A lower aperture number blurs more. This costs FPS. Both effects only work if the game has them: the line on the General page says so.", 5);
     section("TUNING");
     slider("Bloom threshold", fx.bloomThreshold, 0.f, 2.f, 0.05f, "0.00", [](float v) { fx.bloomThreshold = v; });
     slider("Vignette softness", fx.vignetteSmooth, 0.05f, 1.f, 0.05f, "0.00", [](float v) { fx.vignetteSmooth = v; });
@@ -731,6 +845,14 @@ void pagePerf() {
     toggle("No post-processing", fx.noPostFx, [](bool v) { fx.noPostFx = v; });
     if (fx.noPostFx) caption("This also switches off the visual effects of this mod.", 2);
     toggle("No shadow", fx.noShadow, [](bool v) { fx.noShadow = v; });
+
+    section("QUALITY");
+    caption("Anti-aliasing");
+    segments(kAaNames, fx.aaMode, [](int i) { fx.aaMode = i; }, 1.f);
+    caption("Anisotropic filtering");
+    segments(kAnisoNames, fx.anisoMode, [](int i) { fx.anisoMode = i; }, 1.f);
+    fxRow("LOD bias", fx.lodOn, [](bool v) { fx.lodOn = v; }, fx.lodBias, 0.3f, 2.f, 0.1f, "0.0", [](float v) { fx.lodBias = v; });
+    caption("Off or a lower number saves GPU power. Without anti-aliasing the edges get jagged, without anisotropic filtering sloped floors get blurry. A LOD bias under 1 switches objects to simpler models sooner. \"Game\" leaves it as the game has it. These win over the graphics level above.", 6);
 
     section("DISTANCE AND RESOLUTION");
     fxRow("Draw distance", fx.drawDistOn, [](bool v) { fx.drawDistOn = v; }, fx.drawDist, 20.f, 300.f, 10.f, "0", [](float v) { fx.drawDist = v; });
@@ -763,27 +885,100 @@ void pagePerf() {
     section("MEMORY");
     toggle("Auto clean", fx.autoClean, [](bool v) { fx.autoClean = v; });
     button("Clean memory now", [] { fx.cleanReq++; });
-    caption(st.perf.empty() ? "Nothing changed yet." : st.perf, 3);
+    caption(st.perf.empty() ? "Nothing changed yet." : st.perf, 4);
 }
 
-const Palette kEspPalette = {{kEspColors[0][0], kEspColors[0][1], kEspColors[0][2]}, {kEspColors[1][0], kEspColors[1][1], kEspColors[1][2]},
-                             {kEspColors[2][0], kEspColors[2][1], kEspColors[2][2]}, {kEspColors[3][0], kEspColors[3][1], kEspColors[3][2]},
-                             {kEspColors[4][0], kEspColors[4][1], kEspColors[4][2]}, {kEspColors[5][0], kEspColors[5][1], kEspColors[5][2]},
-                             {kEspColors[6][0], kEspColors[6][1], kEspColors[6][2]}, {kEspColors[7][0], kEspColors[7][1], kEspColors[7][2]}};
+// ---- Cheat tab
+void cheatPlayer() {
+    CheatSettings& c = fx.cheat;
+    section("SURVIVAL");
+    toggle("God mode", c.godMode, [](bool v) { fx.cheat.godMode = v; });
+    caption("Enemies cannot attack you.");
+    toggle("No fall damage", c.noFallDamage, [](bool v) { fx.cheat.noFallDamage = v; });
+    toggle("No trap", c.noTrap, [](bool v) { fx.cheat.noTrap = v; });
+    toggle("No cracking floor", c.noCrackFloor, [](bool v) { fx.cheat.noCrackFloor = v; });
+    section("MOVEMENT");
+    fxRow("Speed", c.speedOn, [](bool v) { fx.cheat.speedOn = v; }, c.speed, 1.f, 6.f, 0.1f, "0.0",
+          [](float v) { fx.cheat.speed = v; });
+    caption("1.0 is the normal walking speed.");
+    toggle("No clip", c.noclip, [](bool v) { fx.cheat.noclip = v; });
+    caption("Walk through walls. Look up and walk forward to rise, look down to sink. Strafing keeps the height.", 2);
+    section("WEAPONS");
+    toggle("Infinite ammo", c.infAmmo, [](bool v) { fx.cheat.infAmmo = v; });
+    toggle("Infinite spray", c.infSpray, [](bool v) { fx.cheat.infSpray = v; });
+}
 
-void pageEsp() {
-    section("ITEMS");
-    toggle("Item outline", fx.espItems, [](bool v) { fx.espItems = v; });
-    swatches(kEspPalette, fx.espItemColor, [](int i) { fx.espItemColor = i; fx.espItems = true; });
-    slider("Thickness", fx.espItemWidth, 1.f, 10.f, 0.5f, "0.0", [](float v) { fx.espItemWidth = v; fx.espItems = true; });
-    section("ENTITIES");
-    toggle("Entity outline", fx.espEnemies, [](bool v) { fx.espEnemies = v; });
-    swatches(kEspPalette, fx.espEnemyColor, [](int i) { fx.espEnemyColor = i; fx.espEnemies = true; });
-    slider("Thickness", fx.espEnemyWidth, 1.f, 10.f, 0.5f, "0.0", [](float v) { fx.espEnemyWidth = v; fx.espEnemies = true; });
-    section("OPTIONS");
-    toggle("Visible through walls", fx.espWalls, [](bool v) { fx.espWalls = v; });
-    caption("The outline follows the shape of each item and entity (Granny, Grandpa and the others). The game draws it, the mod only turns it on and sets colour and thickness.", 4);
-    if (!st.esp.empty()) caption(st.esp, 1 + (int)std::count(st.esp.begin(), st.esp.end(), '\n'));
+void cheatEnemies() {
+    CheatSettings& c = fx.cheat;
+    int e = clampi(ui.cheatEnemy, 0, kEnemyCount - 1);
+    const std::vector<std::string> row1(kEnemyNames, kEnemyNames + 4), row2(kEnemyNames + 4, kEnemyNames + kEnemyCount);
+    section("ENEMY");
+    segments(row1, e < 4 ? e : -1, [](int i) { ui.cheatEnemy = i; }, 0.9f);
+    segments(row2, e >= 4 ? e - 4 : -1, [](int i) { ui.cheatEnemy = i + 4; }, 0.9f);
+    std::string name = kEnemyNames[e];
+    std::string up = name;
+    for (char& ch : up) ch = (char)toupper((unsigned char)ch);
+    section(up);
+    // every enemy has its own set: only what the game really has for it is shown
+    toggle("Freeze", c.enemy[e].freeze, [e](bool v) { fx.cheat.enemy[e].freeze = v; });
+    caption(name + " cannot move.");
+    if (kEnemyCan[e][1]) {
+        toggle("Blind", c.enemy[e].blind, [e](bool v) { fx.cheat.enemy[e].blind = v; });
+        caption(name + " cannot see you.");
+    }
+    if (kEnemyCan[e][2]) {
+        toggle("Deaf", c.enemy[e].deaf, [e](bool v) { fx.cheat.enemy[e].deaf = v; });
+        caption(name + " hears nothing: no cracking floor, no dropped items.", 2);
+    }
+    if (!kEnemyCan[e][1] || !kEnemyCan[e][2]) {
+        std::string miss = !kEnemyCan[e][1] && !kEnemyCan[e][2] ? "Blind and Deaf are" : (!kEnemyCan[e][1] ? "Blind is" : "Deaf is");
+        caption(miss + " not available for " + name + ": the game has no such behaviour for it.", 2);
+    }
+    button(std::string(kEnemyKill[e]) + " " + name, [e] { fx.cheat.killReq[e]++; });
+    if (e == 2) caption("Mom Spider cannot die: this stuns her, like the game's own weapons.", 2);
+    if (e == 6) caption("The Little One cannot die: this knocks it out, like the game's own weapons.", 2);
+}
+
+void cheatItems() {
+    CheatSettings& c = fx.cheat;
+    int sel = clampi(c.spawnItem, 0, kItemCount - 1);
+    section("SPAWN ITEMS");
+    slider("Item", (float)(sel + 1), 1.f, (float)kItemCount, 1.f, "0", [](float v) { fx.cheat.spawnItem = (int)std::lround(v) - 1; });
+    caption(std::string("Selected: ") + kItemNames[sel]);
+    button("Spawn item", [] { fx.cheat.spawnReq++; });
+    section("PICK UP");
+    toggle("Auto grab items", c.autoGrab, [](bool v) { fx.cheat.autoGrab = v; });
+    caption("Picks up the items around you by itself.");
+    fxRow("Long reach", c.longReachOn, [](bool v) { fx.cheat.longReachOn = v; }, c.reach, 2.f, 40.f, 1.f, "0",
+          [](float v) { fx.cheat.reach = v; });
+    caption("Items, doors and everything you can interact with work from far away. The slider is the distance in metres.", 2);
+}
+
+void cheatEsp() {
+    CheatSettings& c = fx.cheat;
+    section("ENEMY ESP");
+    toggle("Enemy ESP", c.espEnemy, [](bool v) { fx.cheat.espEnemy = v; });
+    toggle("Name", c.espEnemyName, [](bool v) { fx.cheat.espEnemyName = v; });
+    toggle("Distance", c.espEnemyDist, [](bool v) { fx.cheat.espEnemyDist = v; });
+    toggle("Outline", c.espEnemyOutline, [](bool v) { fx.cheat.espEnemyOutline = v; });
+    slider("Max distance", c.espEnemyMax, 10.f, 300.f, 5.f, "0", [](float v) { fx.cheat.espEnemyMax = v; });
+    section("ITEM ESP");
+    toggle("Item ESP", c.espItem, [](bool v) { fx.cheat.espItem = v; });
+    toggle("Name", c.espItemName, [](bool v) { fx.cheat.espItemName = v; });
+    toggle("Distance", c.espItemDist, [](bool v) { fx.cheat.espItemDist = v; });
+    toggle("Outline", c.espItemOutline, [](bool v) { fx.cheat.espItemOutline = v; });
+    slider("Max distance", c.espItemMax, 10.f, 300.f, 5.f, "0", [](float v) { fx.cheat.espItemMax = v; });
+}
+
+void pageCheat() {
+    segments(kCheatSub, ui.cheatSub, [](int i) { ui.cheatSub = i; scroll = 0.f; }, 0.85f);
+    if (!st.cheat.empty()) caption(st.cheat, 3);
+    switch (ui.cheatSub) {
+        case 0: cheatPlayer(); break;
+        case 1: cheatEnemies(); break;
+        case 2: cheatItems(); break;
+        default: cheatEsp(); break;
+    }
 }
 
 void resetLook() {
@@ -802,6 +997,9 @@ void resetLook() {
     }
     ui.eyeX = ui.eyeY = ui.panX = ui.panY = ui.fpsX = ui.fpsY = -1.f;
 }
+
+std::string gLogText;
+bool gLogShown = false;
 
 void pageUi() {
     slider("Menu size", gScaleDraft, 0.6f, 1.8f, 0.05f, "0.00", [](float v) { gScaleDraft = v; }, [] { ui.scale = gScaleDraft; });
@@ -823,6 +1021,9 @@ void pageUi() {
     toggle("Rounded corners", ui.rounded, [](bool v) { ui.rounded = v; });
     toggle("Lock icon and menu position", ui.lock, [](bool v) { ui.lock = v; });
     button("Reset menu look", [] { resetLook(); });
+    section("LOG");
+    button("Show last log lines", [] { gLogText = logTail(22); gLogShown = true; });
+    if (gLogShown) caption(gLogText.empty() ? "(the log is empty)" : gLogText, 22);
 }
 
 // ================================================================ the panel, the eye, the FPS counter
@@ -850,10 +1051,12 @@ void drawPanel() {
 
     float tx = x + 10.f * s, tw = sbW - 12.f * s, th = 32.f * s;
     float ty = y + hdrH + 4.f * s;
-    for (int i = 0; i < 6; i++) drawTab(i, tx, ty + i * (th + 4.f * s), tw, th, acc);
+    // the tab list: General .. Performance, then Cheat (tab 6). Settings (tab 5) sits at the bottom.
+    const int kTopTabs[6] = {0, 1, 2, 3, 4, 6};
+    for (int i = 0; i < 6; i++) drawTab(kTopTabs[i], tx, ty + i * (th + 4.f * s), tw, th, acc);
     float sy = y + ph - 12.f * s - th;
     fill(tx + 4.f * s, sy - 8.f * s, tw - 8.f * s, 1.f * s, Col(1.f, 1.f, 1.f, 0.10f));
-    drawTab(6, tx, sy, tw, th, acc);
+    drawTab(5, tx, sy, tw, th, acc);
 
     // ---- right: header, page, footer
     rfill(kx, ky, kw, kBot - ky, 9.f * s, card);
@@ -879,7 +1082,7 @@ void drawPanel() {
         case 2: pageEffects(); break;
         case 3: pageAdvanced(); break;
         case 4: pagePerf(); break;
-        case 5: pageEsp(); break;
+        case 6: pageCheat(); break;
         default: pageUi(); break;
     }
     contentH = (cy + scroll) - cTop;
@@ -927,7 +1130,7 @@ void drawGraph(float x, float y, float w, float h) {
     }
     char t[48];
     snprintf(t, sizeof(t), "%.1f ms   worst %.0f", sum / kGraphN, worst);
-    text(x + 6.f * s, y + 1.f * s, w - 12.f * s, 14.f * s, t, fsz(8.5f, 10.f), Col(0.70f, 0.74f, 0.82f, 1.f), Left);
+    text(x + 6.f * s, y + 1.f * s, w - 12.f * s, 14.f * s, t, fsz(8.5f, 10.5f), Col(0.70f, 0.74f, 0.82f, 1.f), Left);
 }
 
 void drawFps() {
@@ -940,13 +1143,13 @@ void drawFps() {
         rring(ui.fpsX, y, fpsW, fpsH, fpsH * 0.5f, 1.f * s, withA(accentNow(), 0.7f));
         float size = fsz(11.5f);
         std::string num = std::to_string(n), rest = " FPS";
-        float w1 = fontFor(size)->CalcTextSizeA(size, FLT_MAX, 0, num.c_str()).x, w2 = fontFor(size)->CalcTextSizeA(size, FLT_MAX, 0, rest.c_str()).x;
+        float w1 = gFont->CalcTextSizeA(size, FLT_MAX, 0, num.c_str()).x, w2 = gFont->CalcTextSizeA(size, FLT_MAX, 0, rest.c_str()).x;
         float x0 = ui.fpsX + (fpsW - (w1 + w2)) * 0.5f;
-        float th = fontFor(size)->CalcTextSizeA(size, FLT_MAX, 0, num.c_str()).y;
+        float th = gFont->CalcTextSizeA(size, FLT_MAX, 0, num.c_str()).y;
         float y0 = y + (fpsH - th) * 0.5f;
-        D->AddText(fontFor(size), size, ImVec2(x0, y0), U(col), num.c_str());
-        D->AddText(fontFor(size), size, ImVec2(x0 + size * 0.04f, y0), U(col), num.c_str());
-        D->AddText(fontFor(size), size, ImVec2(x0 + w1, y0), U(White), rest.c_str());
+        D->AddText(gFont, size, ImVec2(x0, y0), U(col), num.c_str());
+        D->AddText(gFont, size, ImVec2(x0 + size * 0.04f, y0), U(col), num.c_str());
+        D->AddText(gFont, size, ImVec2(x0 + w1, y0), U(White), rest.c_str());
         y += fpsH + 4.f * s;
     }
     if (ui.showGraph) drawGraph(ui.fpsX, y, graphW, graphH);
@@ -1117,21 +1320,31 @@ void initImGui() {
     ImGuiIO& io = ImGui::GetIO();
     io.IniFilename = nullptr;
     io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
-    // the same font at two sizes: ImGui scales a glyph best when it is drawn close to the size it was made at
-    auto addFont = [&](float px) -> ImFont* {
+    // The built-in pixel font turns to mush when the menu is small. Android ships clean fonts: use the first one found.
+    static const char* const kFonts[] = {
+        "/system/fonts/Roboto-Regular.ttf",       "/system/fonts/RobotoStatic-Regular.ttf", "/system/fonts/Roboto[wdth,wght].ttf",
+        "/system/fonts/NotoSans-Regular.ttf",     "/system/fonts/GoogleSans-Regular.ttf",   "/system/fonts/DroidSans.ttf",
+        "/system/fonts/SECRobotoLight-Regular.ttf",
+    };
+    for (const char* path : kFonts) {
+        FILE* f = fopen(path, "rb");
+        if (!f) continue;
+        fclose(f);
         ImFontConfig fc;
-        fc.SizePixels = px;
         fc.OversampleH = 2;
         fc.OversampleV = 2;
-#ifdef HAVE_UI_FONT
-        fc.FontDataOwnedByAtlas = false;  // the data lives in this library
-        if (ImFont* f = io.Fonts->AddFontFromMemoryTTF(const_cast<unsigned char*>(kUiFont), (int)kUiFontSize, px, &fc)) return f;
-        fc.FontDataOwnedByAtlas = true;
-#endif
-        return io.Fonts->AddFontDefault(&fc);
-    };
-    gFontS = addFont(18.f);
-    gFontL = addFont(30.f);
+        gFont = io.Fonts->AddFontFromFileTTF(path, 40.f, &fc);
+        if (gFont) {
+            logf("menu: font %s", path);
+            break;
+        }
+    }
+    if (!gFont) {
+        logf("menu: no system font found, using the built-in one");
+        ImFontConfig fc;
+        fc.SizePixels = 32.f;
+        gFont = io.Fonts->AddFontDefault(&fc);
+    }
 
     if (!ImGui_ImplOpenGL3_Init("#version 300 es")) {
         logf("menu: ImGui OpenGL backend failed to start");
@@ -1187,6 +1400,7 @@ void menuFrame(int w, int h) {
     ImGui::NewFrame();
     D = ImGui::GetForegroundDrawList();
     hits.clear();
+    drawEsp();
     drawFps();
     drawEye();
     if (ui.open) drawPanel();
