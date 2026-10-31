@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -76,25 +77,43 @@ double gFfUntil = 0.0;   // fast-forward through a cutscene until this time (rea
 float gFfSpeed = 1.f;
 
 // ---------------------------------------------------------------- time scale
+// The game writes Time.timeScale itself (pause, slow motion). If both the game and this tab write it, the speed flips
+// from frame to frame. So the setter is hooked: what the game writes is remembered, and while an override is on, the
+// game's value is replaced by ours (a pause, 0, is always kept).
+float gGameScale = 1.f;   // what the game wants
+float gForce = -1.f;      // the override; <= 0: none
+bool gTsHooked = false;
+void (*oSetTs)(float, const void*) = nullptr;
+
+void hSetTs(float v, const void* mi) {
+    gGameScale = v;
+    float eff = v;
+    if (gForce > 0.f && v > 0.0001f) eff = gForce;
+    if (oSetTs) oSetTs(eff, mi);
+}
+
 bool gTsApplied = false;
-float gTsOrig = 1.f, gTsLast = 1.f;
+float gTsOrig = 1.f;
 
 void timeTick(double now) {
     if (!u.tsGet || !u.tsSet) return;
     float want = -1.f;
     if (now < gFfUntil) want = gFfSpeed;
     else if (S.speedOn) want = clampf(S.speed, 0.01f, 5.f);
+    gForce = want;
     float cur = u.tsGet();
     if (want > 0.f) {
         if (!gTsApplied) {
             gTsOrig = cur > 0.001f ? cur : 1.f;
+            if (!gTsHooked) gGameScale = gTsOrig;
             gTsApplied = true;
         }
         // a time scale of 0 is the game's pause: leave it alone
-        if (cur > 0.0001f && std::fabs(cur - want) > 0.0005f) u.tsSet(want);
-        gTsLast = want;
+        float game = gTsHooked ? gGameScale : cur;
+        if (game > 0.0001f && cur > 0.0001f && std::fabs(cur - want) > 0.0005f) u.tsSet(want);
     } else if (gTsApplied) {
-        if (cur > 0.0001f && std::fabs(cur - gTsLast) < 0.01f) u.tsSet(gTsOrig > 0.001f ? gTsOrig : 1.f);
+        float back = gTsHooked ? gGameScale : gTsOrig;
+        if (back > 0.0001f && cur > 0.0001f) u.tsSet(back);
         gTsApplied = false;
     }
 }
@@ -255,12 +274,17 @@ void restartScene() {
 }
 
 // ---------------------------------------------------------------- the splits
+// The list on screen. With "auto list" it holds the items picked up in this run, in the order they were picked up, and
+// it starts empty again at every restart. Without it the list is every item the filter allows, and a restart only
+// clears the times. The filter (which items are used) is kept in a file.
 struct Split {
     std::string name;
     double t = -1.0;  // seconds since the timer started; < 0 = not yet
 };
 std::vector<Split> gRoute;
-bool gRouteLoaded = false;
+std::vector<std::string> gItems;  // every item the game has (nice names, in the game's order)
+std::set<std::string> gOff;       // items the filter has switched off
+bool gFilterLoaded = false, gRouteDirty = true;
 bool gEscapeDone = false;
 double gEscapeT = -1.0;
 double gTimerStart = 0.0, gTimerStop = -1.0;  // gTimerStop >= 0: the timer is stopped (escaped)
@@ -268,38 +292,34 @@ std::vector<std::string> gPicks;              // names the hook saw, handled in 
 int gEscapeEvents = 0;
 std::string gEscapeName;
 
-std::string routePath() {
+std::string filterPath() {
     std::string d = dataDir() ? dataDir() : "";
-    return d.empty() ? "" : d + "/visualmobile.splits";
+    return d.empty() ? "" : d + "/visualmobile.splitoff";
 }
 
-void routeSave() {
-    std::string p = routePath();
+void filterSave() {
+    std::string p = filterPath();
     if (p.empty()) return;
     FILE* f = fopen(p.c_str(), "w");
     if (!f) return;
-    for (const Split& s : gRoute) fprintf(f, "%s\n", s.name.c_str());
+    for (const std::string& n : gOff) fprintf(f, "%s\n", n.c_str());
     fclose(f);
 }
 
-void routeLoad() {
-    if (gRouteLoaded) return;
-    gRouteLoaded = true;
-    std::string p = routePath();
+void filterLoad() {
+    if (gFilterLoaded) return;
+    gFilterLoaded = true;
+    std::string p = filterPath();
     FILE* f = p.empty() ? nullptr : fopen(p.c_str(), "r");
     if (!f) return;
     char line[128];
     while (fgets(line, sizeof(line), f)) {
         size_t n = strlen(line);
         while (n && (line[n - 1] == '\n' || line[n - 1] == '\r')) line[--n] = 0;
-        if (n) {
-            Split s;
-            s.name = line;
-            gRoute.push_back(s);
-        }
+        if (n) gOff.insert(line);
     }
     fclose(f);
-    logf("tas: %d items in the split list", (int)gRoute.size());
+    logf("tas: %d items are switched off in the split filter", (int)gOff.size());
 }
 
 // "SpiderKey(Clone)" -> "Spider"; "padlock_key" -> "Padlock key"
@@ -322,8 +342,98 @@ std::string pretty(std::string n) {
     return o.empty() ? "Item" : o;
 }
 
-void resetTimes(double now) {
+bool isOn(const std::string& name) { return gOff.find(name) == gOff.end(); }
+
+void addItem(const std::string& name) {
+    if (std::find(gItems.begin(), gItems.end(), name) == gItems.end()) {
+        gItems.push_back(name);
+        gRouteDirty = true;
+    }
+}
+
+// the item definitions of the game: Inventory.ItemDefs (an array or a List) of ItemDefs, each with an itemName
+Il2CppClass* gInvClass = nullptr;
+bool gItemsFound = false;
+double gItemsNext = 0.0;
+
+void discoverItems(double now) {
+    if (now < gItemsNext || !gInvClass) return;
+    gItemsNext = now + (gItemsFound ? 15.0 : 2.0);
+    Il2CppObject* arr = findObjectsOfType(gInvClass);
+    if (!arr || A.array_length(arr) == 0) return;
+    Il2CppObject* inv = arrayData(arr)[0];
+    if (!inv || !alive(inv)) return;
+    size_t off = fieldOffset(gInvClass, "ItemDefs");
+    if (!off) return;
+    Il2CppObject* defs = *fieldPtr<Il2CppObject*>(inv, off);
+    if (!defs) return;
+    Il2CppObject** data = nullptr;
+    size_t n = 0;
+    const char* cn = className(defs);
+    if (cn && strstr(cn, "[]")) {
+        n = A.array_length(defs);
+        data = arrayData(defs);
+    } else {  // a List: _items and _size
+        Il2CppClass* lk = classOf(defs);
+        size_t oi = lk ? fieldOffset(lk, "_items") : 0, os = lk ? fieldOffset(lk, "_size") : 0;
+        if (oi && os) {
+            Il2CppObject* items = *fieldPtr<Il2CppObject*>(defs, oi);
+            if (items) {
+                n = (size_t)*fieldPtr<int>(defs, os);
+                data = arrayData(items);
+            }
+        }
+    }
+    if (!data || n == 0 || n > 400) return;
+    size_t nameOff = 0;
+    int added = 0;
+    for (size_t i = 0; i < n; i++) {
+        Il2CppObject* d = data[i];
+        if (!d) continue;
+        if (!nameOff) {
+            Il2CppClass* dk = classOf(d);
+            nameOff = dk ? fieldOffset(dk, "itemName") : 0;
+            if (!nameOff) return;
+        }
+        std::string nm = str(*fieldPtr<Il2CppString*>(d, nameOff));
+        if (nm.empty()) continue;
+        size_t before = gItems.size();
+        addItem(pretty(nm));
+        if (gItems.size() != before) added++;
+    }
+    if (!gItemsFound) logf("tas: %d items found in the game's item list", (int)gItems.size());
+    gItemsFound = true;
+    (void)added;
+}
+
+// make the list on screen match the mode and the filter
+void syncRoute() {
+    if (!gRouteDirty) return;
+    gRouteDirty = false;
+    if (S.autoList) {
+        std::vector<Split> keep;
+        for (const Split& s : gRoute)
+            if (s.t >= 0.0 && isOn(s.name)) keep.push_back(s);
+        gRoute.swap(keep);
+    } else {
+        std::vector<Split> now;
+        for (const std::string& name : gItems) {
+            if (!isOn(name)) continue;
+            Split s;
+            s.name = name;
+            for (const Split& old : gRoute)
+                if (old.name == name) s.t = old.t;
+            now.push_back(s);
+        }
+        gRoute.swap(now);
+    }
+}
+
+// a new run (restart, new scene, the Reset button)
+void resetRun(double now) {
     for (Split& s : gRoute) s.t = -1.0;
+    if (S.autoList) gRoute.clear();
+    gRouteDirty = true;
     gEscapeDone = false;
     gEscapeT = -1.0;
     gTimerStart = now;
@@ -335,8 +445,9 @@ void handlePicks(double now) {
     std::vector<std::string> picks;
     picks.swap(gPicks);
     for (const std::string& raw : picks) {
-        if (gTimerStop >= 0.0) continue;  // the run is over
         std::string name = pretty(raw);
+        addItem(name);  // the filter page knows every item that was ever seen
+        if (gTimerStop >= 0.0 || !isOn(name)) continue;
         double t = now - gTimerStart;
         bool found = false;
         for (Split& s : gRoute) {
@@ -354,7 +465,6 @@ void handlePicks(double now) {
             s.name = name;
             s.t = t;
             gRoute.push_back(s);
-            routeSave();
             logf("tas: split %s %.2f (added to the list)", name.c_str(), t);
         }
     }
@@ -367,12 +477,30 @@ void handleEscape(double now) {
     gEscapeDone = true;
     gEscapeT = now - gTimerStart;
     gTimerStop = now;
-    logf("tas: escape %s at %.2f", gEscapeName.c_str(), gEscapeT);
+    logf("tas: escape (%s) at %.2f", gEscapeName.c_str(), gEscapeT);
     if (S.skipEnding) {  // play the ending cutscene fast
-        gFfUntil = now + 40.0;
+        gFfUntil = now + 60.0;
         gFfSpeed = 10.f;
         logf("tas: skipping the ending cutscene (x10)");
     }
+}
+
+// the menu's filter changes
+void handleFilterChanges() {
+    std::vector<std::pair<std::string, int>> ch;
+    if (!splitFilterTake(ch)) return;
+    for (auto& c : ch) {
+        if (c.first == "*") {
+            if (c.second) gOff.clear();
+            else for (const std::string& n : gItems) gOff.insert(n);
+        } else if (c.second) {
+            gOff.erase(c.first);
+        } else {
+            gOff.insert(c.first);
+        }
+    }
+    filterSave();
+    gRouteDirty = true;
 }
 
 double gPublishNext = 0.0;
@@ -395,6 +523,8 @@ void publishSplits(double now, bool force) {
     }
     v.running = gTimerStop < 0.0;
     v.timer = (gTimerStop >= 0.0 ? gTimerStop : now) - gTimerStart;
+    v.items = gItems;
+    for (const std::string& n : gItems) v.itemOn.push_back(isOn(n) ? 1 : 0);
     setSplitsView(v);
 }
 
@@ -438,10 +568,23 @@ ESCAPE_HOOK(hEscRobo, oEscRobo, "robot")
 
 // being caught while hiding in bed starts a cutscene: with the option on it is played fast
 void bedCaught() {
+    logf("tas: caught in bed (skip %s)", S.skipBed ? "on" : "off");
     if (!S.skipBed) return;
-    gFfUntil = nowS() + 8.0;
+    gFfUntil = nowS() + 20.0;
     gFfSpeed = 8.f;
     logf("tas: skipping the bed cutscene (x8)");
+}
+
+// the game's own end sequence: a second way to know that an ending started
+Fn3 oEndProc = nullptr;
+uint64_t hEndProc(void* a, void* b, void* c) {
+    logf("tas: Gameovers.EndProcess called (skip ending %s)", S.skipEnding ? "on" : "off");
+    if (S.skipEnding && nowS() >= gFfUntil) {
+        gFfUntil = nowS() + 60.0;
+        gFfSpeed = 10.f;
+        logf("tas: skipping the ending cutscene (x10)");
+    }
+    return oEndProc ? oEndProc(a, b, c) : 0;
 }
 uint64_t hBedG(void* a, void* b, void* c) {
     bedCaught();
@@ -460,7 +603,7 @@ int gHookOk = 0, gHookTotal = 0;
 
 void install(HookInstaller hook) {
     resolveUnity();
-    routeLoad();
+    filterLoad();
 
     auto H = [&](const char* cls, const char* method, int argc, void* repl, void** orig) {
         gHookTotal++;
@@ -498,6 +641,22 @@ void install(HookInstaller hook) {
     H("Escapes", "EscapeRobo", 0, (void*)hEscRobo, (void**)&oEscRobo);
     H("PlayerStatus", "GrannyCaughtYouBed", 0, (void*)hBedG, (void**)&oBedG);
     H("PlayerStatus", "GrandpaCaughtYouBed", 0, (void*)hBedP, (void**)&oBedP);
+    H("Gameovers", "EndProcess", 0, (void*)hEndProc, (void**)&oEndProc);
+
+    // Time.timeScale: so that the game cannot fight the speed (see above)
+    {
+        Il2CppClass* kt = findClass("UnityEngine", "Time");
+        const MethodInfo* m = kt ? findMethod(kt, "set_timeScale", 1) : nullptr;
+        gHookTotal++;
+        if (m && hook(fnPtr(m), (void*)hSetTs, (void**)&oSetTs, "Time.set_timeScale")) {
+            gTsHooked = true;
+            gHookOk++;
+        } else {
+            logf("tas: Time.set_timeScale could not be hooked, the speed may flicker where the game sets it itself");
+            gFailed.push_back("Time.set_timeScale");
+        }
+    }
+    gInvClass = findClass("", "Inventory");
 
     gStatus = "TAS: " + std::to_string(gHookOk) + " of " + std::to_string(gHookTotal) + " hooks ready.";
     if (!gFailed.empty()) {
@@ -514,12 +673,11 @@ void tick(const TasSettings& s) {
     double now = nowS();
 
     static bool first = true;
-    static int lastRestart = 0, lastReset = 0, lastClear = 0;
+    static int lastRestart = 0, lastReset = 0;
     if (first) {
         first = false;
         lastRestart = s.restartReq;
         lastReset = s.resetSplitsReq;
-        lastClear = s.clearListReq;
         gTimerStart = now;
     }
 
@@ -536,7 +694,7 @@ void tick(const TasSettings& s) {
                 gAudio.clear();
                 gAudioNext = 0.0;
                 gFfUntil = 0.0;
-                resetTimes(now);
+                resetRun(now);
                 gPicks.clear();
                 gEscapeEvents = 0;
                 publishSplits(now, true);
@@ -550,20 +708,21 @@ void tick(const TasSettings& s) {
     }
     if (s.resetSplitsReq != lastReset) {
         lastReset = s.resetSplitsReq;
-        resetTimes(now);
+        resetRun(now);
         gPicks.clear();
+        syncRoute();
         publishSplits(now, true);
         postToast("Splits reset, timer started");
     }
-    if (s.clearListReq != lastClear) {
-        lastClear = s.clearListReq;
-        gRoute.clear();
-        routeSave();
-        resetTimes(now);
-        publishSplits(now, true);
-        postToast("Split list cleared");
-    }
 
+    static bool lastAuto = true;
+    if (s.autoList != lastAuto) {
+        lastAuto = s.autoList;
+        gRouteDirty = true;
+    }
+    handleFilterChanges();
+    discoverItems(now);
+    syncRoute();
     handlePicks(now);
     handleEscape(now);
     timeTick(now);

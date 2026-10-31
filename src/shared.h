@@ -2,6 +2,7 @@
 #include <atomic>
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 // State shared between the three threads: the game's main thread (applies effects, reads touch),
@@ -101,9 +102,11 @@ struct TasSettings {
     bool escapeSplit = true;                            // "Escape" is always the last row
     float splitsScale = 1.f;                            // 0.6 .. 2
     float splitsAlpha = 0.8f;                           // 0 .. 1
-    int resetSplitsReq = 0, clearListReq = 0;
+    int resetSplitsReq = 0;
     // ---- utility
     int restartReq = 0;
+    bool restartBtn = false;                            // a small restart button on the screen
+    float restartBtnSize = 1.f;                         // 0.6 .. 2
     bool skipBed = false;                               // the cutscene when Granny or Grandpa catches you in bed
     bool skipEnding = false;                            // the cutscene after an escape
     // ---- crosshair
@@ -206,6 +209,8 @@ struct SplitsView {
     std::vector<SplitRow> rows;
     double timer = 0.0;     // seconds since the timer started (frozen after the escape)
     bool running = true;
+    std::vector<std::string> items;   // every item the game has (for the filter page)
+    std::vector<char> itemOn;         // 1: the filter uses it
 };
 
 struct UiSettings {
@@ -231,6 +236,7 @@ struct UiSettings {
     float panX = -1.f, panY = -1.f;
     float fpsX = -1.f, fpsY = -1.f;
     float splitX = -1.f, splitY = -1.f;
+    float restartX = -1.f, restartY = -1.f;
 };
 
 struct Touch {
@@ -252,6 +258,9 @@ void setEspStatus(const std::string& s);
 void setTasStatus(const std::string& s);
 void setSplitsView(const SplitsView& v);
 SplitsView getSplitsView();
+// the split filter: the menu asks, the main thread does it (name "*" = every item)
+void splitFilterSet(const std::string& name, bool on);
+bool splitFilterTake(std::vector<std::pair<std::string, int>>& out);
 void setPerfStatus(const std::string& perf, const std::string& resolution, int screenW, int screenH);
 MainStatus currentStatus();
 void postToast(const char* text);  // a short message in the footer of the panel

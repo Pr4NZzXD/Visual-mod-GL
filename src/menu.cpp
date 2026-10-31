@@ -62,7 +62,7 @@ ImFont* gFont = nullptr;
 float W = 0, H = 0;
 float S = 1.f, ES = 44.f;
 float fpsW, fpsH, fpsBoxW, fpsBoxH, graphW, graphH, pw, ph, hdrH, ftH, sbW;
-float splitBoxW = 0.f, splitBoxH = 0.f, splitFont = 12.f, splitLine = 16.f;
+float splitBoxW = 0.f, splitBoxH = 0.f, splitFont = 12.f, splitLine = 16.f, restartD = 40.f;
 SplitsView gSv;
 float kx, ky, kw, kBot, cTop, cBot, cx, cw, cy;
 float scroll = 0.f, contentH = 0.f;
@@ -324,6 +324,15 @@ void layout() {
         ui.splitX = clampf(ui.splitX, 0.f, std::max(0.f, W - splitBoxW));
         ui.splitY = clampf(ui.splitY, 0.f, std::max(0.f, H - splitBoxH));
     }
+
+    // the restart button: a small round button under the eye
+    restartD = clampf(40.f * S * fx.tas.restartBtnSize, 24.f, H * 0.25f);
+    if (ui.restartX < 0.f || ui.restartY < 0.f) {
+        ui.restartX = ui.eyeX;
+        ui.restartY = ui.eyeY + ES + 10.f * S;
+    }
+    ui.restartX = clampf(ui.restartX, 0.f, std::max(0.f, W - restartD));
+    ui.restartY = clampf(ui.restartY, 0.f, std::max(0.f, H - restartD));
 
     pw = std::min(W - 12.f * S, 540.f * S);
     ph = std::min(H - 12.f * S, 340.f * S);
@@ -999,23 +1008,37 @@ void pageTas() {
             toggle("Show the splits panel", t.splitsShow, [](bool v) { fx.tas.splitsShow = v; });
             toggle("Auto list items", t.autoList, [](bool v) { fx.tas.autoList = v; });
             toggle("Escape split", t.escapeSplit, [](bool v) { fx.tas.escapeSplit = v; });
-            caption("The panel lists every item with the time you picked it up. Auto list adds a new item to the list the first time you pick it up. With it off, only the items already in the list get a time. Escape is always the last row.", 4);
+            caption("Auto list: the list starts empty at every restart and fills up as you pick items up. Without it, the list shows every item you chose in the filter below, with -- until you pick it up. Escape is always the last row.", 4);
             button("Reset splits and start the timer", [] { fx.tas.resetSplitsReq++; });
-            button("Clear the list", [] { fx.tas.clearListReq++; });
             section("PANEL");
             slider("Panel scale", t.splitsScale, 0.6f, 2.f, 0.05f, "0.00", [](float v) { fx.tas.splitsScale = v; });
             slider("Panel opacity", t.splitsAlpha, 0.f, 1.f, 0.05f, "0.00", [](float v) { fx.tas.splitsAlpha = v; });
             caption("Drag the panel on the screen to move it. The timer starts again at every scene load.", 2);
+            section("ITEM FILTER");
+            if (gSv.items.empty()) {
+                caption("The items show up here once you are in the game and have picked one up.", 2);
+            } else {
+                caption("Only the items that are on are used for the splits.", 1);
+                button("All on", [] { splitFilterSet("*", true); });
+                button("All off", [] { splitFilterSet("*", false); });
+                for (size_t i = 0; i < gSv.items.size(); i++) {
+                    std::string name = gSv.items[i];
+                    bool on = i < gSv.itemOn.size() && gSv.itemOn[i];
+                    toggle(name, on, [name](bool v) { splitFilterSet(name, v); });
+                }
+            }
             break;
         }
         case 2: {  // ---- utility
             section("RESTART");
             button("Restart", [] { fx.tas.restartReq++; });
-            caption("Loads the scene you are in again.", 1);
+            toggle("Restart button on the screen", t.restartBtn, [](bool v) { fx.tas.restartBtn = v; });
+            slider("Button size", t.restartBtnSize, 0.6f, 2.f, 0.05f, "0.00", [](float v) { fx.tas.restartBtnSize = v; });
+            caption("Loads the scene you are in again. The button on the screen restarts with one tap, without opening the menu. Drag it to move it.", 3);
             section("CUTSCENES");
             toggle("Skip the bed cutscene", t.skipBed, [](bool v) { fx.tas.skipBed = v; });
             toggle("Skip the ending cutscene", t.skipEnding, [](bool v) { fx.tas.skipEnding = v; });
-            caption("The cutscene is not cut out: it plays at 8x (bed) and 10x (ending), then the game goes on as usual.", 2);
+            caption("The cutscene is not cut out: it plays at 8x (bed) and 10x (ending), then the game goes on as usual. If it does not work, open Menu settings > Show last log lines: the lines that start with tas: say what happened.", 3);
             break;
         }
         default: {  // ---- crosshair
@@ -1044,7 +1067,7 @@ void resetLook() {
         ui.accent[i] = kAccents[0][i];
         ui.bg[i] = kBackgrounds[0][i];
     }
-    ui.eyeX = ui.eyeY = ui.panX = ui.panY = ui.fpsX = ui.fpsY = ui.splitX = ui.splitY = -1.f;
+    ui.eyeX = ui.eyeY = ui.panX = ui.panY = ui.fpsX = ui.fpsY = ui.splitX = ui.splitY = ui.restartX = ui.restartY = -1.f;
 }
 
 std::string gLogText;
@@ -1239,6 +1262,26 @@ void drawSplits() {
     }
 }
 
+// the restart button: a round button with a circular arrow
+void drawRestartBtn() {
+    if (!fx.tas.restartBtn) return;
+    Col acc = accentNow();
+    float r = restartD * 0.5f;
+    float cxp = ui.restartX + r, cyp = ui.restartY + r;
+    disc(cxp, cyp, r, withA(bgCol(), 0.88f));
+    ring(cxp, cyp, r - S, 2.f * S, withA(acc, 1.f));
+    // an open circle with an arrow head at its end
+    float ar = r * 0.46f, th = std::max(1.5f, r * 0.13f);
+    const float a0 = -1.2f, a1 = 4.4f;  // radians; the gap is at the top right
+    D->PathArcTo(ImVec2(cxp, cyp), ar, a0, a1, 24);
+    D->PathStroke(U(withA(acc, 1.f)), 0, th);
+    float ex = cxp + std::cos(a1) * ar, ey = cyp + std::sin(a1) * ar;
+    float tx = -std::sin(a1), ty = std::cos(a1);  // the direction of travel at the end
+    float nx = std::cos(a1), ny = std::sin(a1);
+    float hl = r * 0.34f, hw = r * 0.26f;
+    D->AddTriangleFilled(ImVec2(ex + tx * hl, ey + ty * hl), ImVec2(ex + nx * hw, ey + ny * hw), ImVec2(ex - nx * hw, ey - ny * hw), U(withA(acc, 1.f)));
+}
+
 // six crosshairs, drawn with a dark edge so they show on any background
 void drawCrosshair() {
     if (!fx.tas.crosshairOn) return;
@@ -1275,7 +1318,7 @@ void drawCrosshair() {
 }
 
 // ================================================================ the finger
-enum Mode { ModeNone, ModeTap, ModeSlider, ModeEye, ModePanel, ModeScroll, ModeFps, ModeSplits };
+enum Mode { ModeNone, ModeTap, ModeSlider, ModeEye, ModePanel, ModeScroll, ModeFps, ModeSplits, ModeRestart };
 Mode gMode = ModeNone;
 bool gPtrDown = false, gMoved = false;
 float gDownX = 0, gDownY = 0, gLastX = 0, gLastY = 0;
@@ -1345,6 +1388,7 @@ void pointerDown(float x, float y) {
     }
     if (inside(x, y, ui.eyeX, ui.eyeY, ES, ES)) gMode = ModeEye;
     else if ((ui.showFps || ui.showGraph) && inside(x, y, ui.fpsX, ui.fpsY, fpsBoxW, fpsBoxH)) gMode = ModeFps;
+    else if (fx.tas.restartBtn && inside(x, y, ui.restartX, ui.restartY, restartD, restartD)) gMode = ModeRestart;
     else if (fx.tas.splitsShow && inside(x, y, ui.splitX, ui.splitY, splitBoxW, splitBoxH)) gMode = ModeSplits;
 }
 
@@ -1381,6 +1425,12 @@ void pointerMove(float x, float y) {
                 ui.splitY += dy;
             }
             break;
+        case ModeRestart:
+            if (gMoved && !ui.lock) {
+                ui.restartX += dx;
+                ui.restartY += dy;
+            }
+            break;
         case ModeTap:
             if (gMoved && gDownY >= cTop && gDownX >= kx) gMode = ModeScroll;
             break;
@@ -1405,6 +1455,13 @@ void pointerUp(float x, float y) {
             break;
         case ModeSlider:
             if (gHasActive && gActiveHit.release) gActiveHit.release();
+            saveSoon();
+            break;
+        case ModeRestart:
+            if (!gMoved) {  // a tap: restart at once
+                fx.tas.restartReq++;
+                changed();
+            }
             saveSoon();
             break;
         case ModePanel:
@@ -1534,6 +1591,7 @@ void menuFrame(int w, int h) {
     drawCrosshair();
     drawFps();
     drawSplits();
+    drawRestartBtn();
     drawEye();
     if (ui.open) drawPanel();
     ImGui::Render();

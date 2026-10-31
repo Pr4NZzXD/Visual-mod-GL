@@ -69,6 +69,24 @@ void setSplitsView(const SplitsView& v) {
     gSplits = v;
 }
 
+static std::vector<std::pair<std::string, int>> gFilterPending;
+
+void splitFilterSet(const std::string& name, bool on) {
+    std::lock_guard<std::mutex> l(gMutex);
+    gFilterPending.push_back(std::make_pair(name, on ? 1 : 0));
+    // show the change at once: the main thread publishes the real state a moment later
+    for (size_t i = 0; i < gSplits.items.size(); i++)
+        if (name == "*" || gSplits.items[i] == name) gSplits.itemOn[i] = on ? 1 : 0;
+}
+
+bool splitFilterTake(std::vector<std::pair<std::string, int>>& out) {
+    std::lock_guard<std::mutex> l(gMutex);
+    if (gFilterPending.empty()) return false;
+    out.swap(gFilterPending);
+    gFilterPending.clear();
+    return true;
+}
+
 SplitsView getSplitsView() {
     std::lock_guard<std::mutex> l(gMutex);
     return gSplits;
@@ -206,6 +224,8 @@ void fields(UiSettings& ui, FxSettings& fx, std::vector<Field>& out) {
     FF("fpsY", ui.fpsY, -1.f, 20000.f);
     FF("splitX", ui.splitX, -1.f, 20000.f);
     FF("splitY", ui.splitY, -1.f, 20000.f);
+    FF("restartX", ui.restartX, -1.f, 20000.f);
+    FF("restartY", ui.restartY, -1.f, 20000.f);
     FF("eyeX", ui.eyeX, -1.f, 20000.f);
     FF("eyeY", ui.eyeY, -1.f, 20000.f);
     FF("panX", ui.panX, -1.f, 20000.f);
@@ -313,6 +333,8 @@ void fields(UiSettings& ui, FxSettings& fx, std::vector<Field>& out) {
         FF("tasSplitAlpha", t.splitsAlpha, 0.f, 1.f);
         FB("tasSkipBed", t.skipBed);
         FB("tasSkipEnd", t.skipEnding);
+        FB("tasRestartBtn", t.restartBtn);
+        FF("tasRestartSize", t.restartBtnSize, 0.6f, 2.f);
         FB("tasCross", t.crosshairOn);
         FI("tasCrossPreset", t.crosshairPreset, 0, 5);
         FF("tasCrossScale", t.crosshairScale, 0.5f, 3.f);
