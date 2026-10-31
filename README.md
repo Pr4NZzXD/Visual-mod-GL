@@ -45,6 +45,14 @@ Everything the mod changes is remembered and put back when you switch the option
 
 Nothing in the Cheat tab uses a fixed address. Classes, fields and methods are found by name when the game starts (`src/cheat.cpp`), and every field is checked for the expected type before it is written, so a game update that renames something turns off only that feature and says so in the log and at the top of the tab. The names were checked against the dump of Granny: Legacy (Unity 2022.3.62f2); `tools/dump_metadata.py` makes the same list from a `global-metadata.dat` to check them again after an update.
 
+**TAS** (its own tab, for speedruns)
+- Speedhack from 0.01x to 5x, with presets
+- Audio sync: every sound follows the speed
+- Item splits: a small panel that lists each item with the time you picked it up. Items are added to the list by themselves, and Escape is always the last row. You can change its size and opacity, and drag it where you want it
+- Restart button
+- Skip the bed and ending cutscenes (they play very fast, they are not cut out)
+- Crosshair with 6 looks, its own size and opacity
+
 **Settings**: menu size, menu opacity and icon opacity (both down to 0%), icon size, accent and background colours, rainbow accent, rounded corners, lock the position
 
 Text in the menu never gets smaller than a readable size, even when the menu is made small, and it gets a soft shadow when the menu is see-through.
