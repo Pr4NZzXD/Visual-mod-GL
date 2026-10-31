@@ -43,6 +43,7 @@ add_library(visualmobile SHARED
     src/scene.cpp
     src/esp.cpp
     src/cheat.cpp
+    src/tas.cpp
     src/menu.cpp
     ${IMGUI_DIR}/imgui.cpp
     ${IMGUI_DIR}/imgui_draw.cpp
