@@ -48,8 +48,8 @@ Nothing in the Cheat tab uses a fixed address. Classes, fields and methods are f
 **TAS** (its own tab, for speedruns)
 - Speedhack from 0.01x to 5x, with presets
 - Audio sync: every sound follows the speed
-- Item splits: a small panel that lists each item with the time you picked it up. Items are added to the list by themselves, and Escape is always the last row. You can change its size and opacity, and drag it where you want it
-- Restart button
+- Item splits: a small panel that lists each item with the time you picked it up. The list starts again at every restart and fills up as you pick items up, or it can show only the items you chose in a filter. Escape is always the last row. You can change its size and opacity, and drag it where you want it
+- Restart button, also as a small round button on the screen (one tap, no menu needed)
 - Skip the bed and ending cutscenes (they play very fast, they are not cut out)
 - Crosshair with 6 looks, its own size and opacity
 
