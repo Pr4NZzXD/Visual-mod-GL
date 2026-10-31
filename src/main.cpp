@@ -20,6 +20,7 @@
 #include "perf.h"
 #include "scene.h"
 #include "shared.h"
+#include "tas.h"
 
 using namespace vm;
 
@@ -98,6 +99,7 @@ void runTick(int source, const char* name) {
     scene::tick(cur);
     esp::tick(cur);
     cheat::tick(cur.cheat);
+    tas::tick(cur.tas);
     gInTick = false;
 }
 
@@ -251,6 +253,7 @@ void* bootstrap(void*) {
 
     // the Cheat tab (every hook is optional: what cannot be hooked is shown in the menu)
     cheat::install(installHook);
+    tas::install(installHook);
 
     logf("all set");
     return nullptr;

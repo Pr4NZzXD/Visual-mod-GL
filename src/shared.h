@@ -89,6 +89,30 @@ struct CheatSettings {
 
 };
 
+// What the TAS tab switches. Counters (restartReq and the others) work like cleanReq: the menu raises them, the main
+// thread does the job once per change.
+struct TasSettings {
+    // ---- time
+    bool speedOn = false;     float speed = 1.f;        // time scale, 0.01 .. 5
+    bool audioSync = true;                              // every sound follows the time scale
+    // ---- item splits
+    bool splitsShow = false;
+    bool autoList = true;                               // an item that is picked up for the first time is added to the list
+    bool escapeSplit = true;                            // "Escape" is always the last row
+    float splitsScale = 1.f;                            // 0.6 .. 2
+    float splitsAlpha = 0.8f;                           // 0 .. 1
+    int resetSplitsReq = 0, clearListReq = 0;
+    // ---- utility
+    int restartReq = 0;
+    bool skipBed = false;                               // the cutscene when Granny or Grandpa catches you in bed
+    bool skipEnding = false;                            // the cutscene after an escape
+    // ---- crosshair
+    bool crosshairOn = false;
+    int crosshairPreset = 0;                            // 0 .. 5
+    float crosshairScale = 1.f;                         // 0.5 .. 3
+    float crosshairAlpha = 1.f;                         // 0 .. 1
+};
+
 // Everything the main thread needs from the menu: screen effects, fog and performance options.
 // The names and ranges follow the C# mod (VisualMobile for MelonLoader).
 struct FxSettings {
@@ -154,6 +178,9 @@ struct FxSettings {
 
     // ---- the Cheat tab
     CheatSettings cheat;
+
+    // ---- the TAS tab
+    TasSettings tas;
 };
 
 // What the main thread tells the menu (texts for the pages, the screen size, short messages).
@@ -164,17 +191,30 @@ struct MainStatus {
     std::string scene;              // what the dark-scene options found (lights, cameras)
     std::string cheat = "Cheat: waiting for the game to start.";
     std::string esp;                // what the outline ESP found
+    std::string tas = "TAS: waiting for the game to start.";
     int screenW = 0, screenH = 0;   // the size the game renders at now
     int toastSeq = 0;
     std::string toast;
 };
 
+// One row of the split list. seconds < 0: not reached yet.
+struct SplitRow {
+    std::string name;
+    double seconds = -1.0;
+};
+struct SplitsView {
+    std::vector<SplitRow> rows;
+    double timer = 0.0;     // seconds since the timer started (frozen after the escape)
+    bool running = true;
+};
+
 struct UiSettings {
     bool open = false;
-    int tab = 0;          // 0 General, 1 Color, 2 Effects, 3 Advanced, 4 Performance, 5 Settings, 6 Cheat
+    int tab = 0;          // 0 General, 1 Color, 2 Effects, 3 Advanced, 4 Performance, 5 Settings, 6 Cheat, 7 TAS
     int colorSub = 0;     // 0 Basic, 1 Temperature, 2 Tint, 3 RGB
     int cheatSub = 0;     // 0 Player, 1 Enemies, 2 Items, 3 ESP
     int cheatEnemy = 0;   // the enemy whose switches the Enemies page shows
+    int tasSub = 0;       // 0 Time, 1 Splits, 2 Utility, 3 Crosshair
     bool showFps = false;
     bool showGraph = false;
     bool lock = false;
@@ -190,6 +230,7 @@ struct UiSettings {
     float eyeX = -1.f, eyeY = -1.f;
     float panX = -1.f, panY = -1.f;
     float fpsX = -1.f, fpsY = -1.f;
+    float splitX = -1.f, splitY = -1.f;
 };
 
 struct Touch {
@@ -208,6 +249,9 @@ void setVisualStatus(const std::string& s);
 void setSceneStatus(const std::string& s);
 void setCheatStatus(const std::string& s);
 void setEspStatus(const std::string& s);
+void setTasStatus(const std::string& s);
+void setSplitsView(const SplitsView& v);
+SplitsView getSplitsView();
 void setPerfStatus(const std::string& perf, const std::string& resolution, int screenW, int screenH);
 MainStatus currentStatus();
 void postToast(const char* text);  // a short message in the footer of the panel

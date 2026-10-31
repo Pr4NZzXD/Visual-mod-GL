@@ -17,6 +17,7 @@ static FxSettings gFx;
 static unsigned gFxVersion = 1;
 static MainStatus gStatus;
 static Touch gTouch;
+static SplitsView gSplits;
 
 
 std::atomic<bool> gBlockTouch{false};
@@ -56,6 +57,21 @@ void setSceneStatus(const std::string& s) {
 void setEspStatus(const std::string& s) {
     std::lock_guard<std::mutex> l(gMutex);
     gStatus.esp = s;
+}
+
+void setTasStatus(const std::string& s) {
+    std::lock_guard<std::mutex> l(gMutex);
+    gStatus.tas = s;
+}
+
+void setSplitsView(const SplitsView& v) {
+    std::lock_guard<std::mutex> l(gMutex);
+    gSplits = v;
+}
+
+SplitsView getSplitsView() {
+    std::lock_guard<std::mutex> l(gMutex);
+    return gSplits;
 }
 
 void setCheatStatus(const std::string& s) {
@@ -179,14 +195,17 @@ void fields(UiSettings& ui, FxSettings& fx, std::vector<Field>& out) {
     out.push_back({"accent", kHex, ui.accent, 0.f, 0.f});
     out.push_back({"bg", kHex, ui.bg, 0.f, 0.f});
     FB("open", ui.open);
-    FI("tab", ui.tab, 0, 6);
+    FI("tab", ui.tab, 0, 7);
     FI("colorSub", ui.colorSub, 0, 3);
     FI("cheatSub", ui.cheatSub, 0, 3);
+    FI("tasSub", ui.tasSub, 0, 3);
     FI("cheatEnemy", ui.cheatEnemy, 0, kEnemyCount - 1);
     FB("showFps", ui.showFps);
     FB("showGraph", ui.showGraph);
     FF("fpsX", ui.fpsX, -1.f, 20000.f);
     FF("fpsY", ui.fpsY, -1.f, 20000.f);
+    FF("splitX", ui.splitX, -1.f, 20000.f);
+    FF("splitY", ui.splitY, -1.f, 20000.f);
     FF("eyeX", ui.eyeX, -1.f, 20000.f);
     FF("eyeY", ui.eyeY, -1.f, 20000.f);
     FF("panX", ui.panX, -1.f, 20000.f);
@@ -280,6 +299,24 @@ void fields(UiSettings& ui, FxSettings& fx, std::vector<Field>& out) {
         FI("chSpawnItem", c.spawnItem, 0, kItemCount - 1);
         FB("chAutoGrab", c.autoGrab);
         FB("chReachOn", c.longReachOn);    FF("chReach", c.reach, 2.f, 40.f);
+    }
+
+    // ---- TAS tab
+    {
+        TasSettings& t = fx.tas;
+        FB("tasSpeedOn", t.speedOn);       FF("tasSpeed", t.speed, 0.01f, 5.f);
+        FB("tasAudio", t.audioSync);
+        FB("tasSplits", t.splitsShow);
+        FB("tasAuto", t.autoList);
+        FB("tasEscape", t.escapeSplit);
+        FF("tasSplitScale", t.splitsScale, 0.6f, 2.f);
+        FF("tasSplitAlpha", t.splitsAlpha, 0.f, 1.f);
+        FB("tasSkipBed", t.skipBed);
+        FB("tasSkipEnd", t.skipEnding);
+        FB("tasCross", t.crosshairOn);
+        FI("tasCrossPreset", t.crosshairPreset, 0, 5);
+        FF("tasCrossScale", t.crosshairScale, 0.5f, 3.f);
+        FF("tasCrossAlpha", t.crosshairAlpha, 0.f, 1.f);
     }
 #undef FB
 #undef FF

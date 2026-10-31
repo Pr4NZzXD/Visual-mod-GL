@@ -62,6 +62,8 @@ ImFont* gFont = nullptr;
 float W = 0, H = 0;
 float S = 1.f, ES = 44.f;
 float fpsW, fpsH, fpsBoxW, fpsBoxH, graphW, graphH, pw, ph, hdrH, ftH, sbW;
+float splitBoxW = 0.f, splitBoxH = 0.f, splitFont = 12.f, splitLine = 16.f;
+SplitsView gSv;
 float kx, ky, kw, kBot, cTop, cBot, cx, cw, cy;
 float scroll = 0.f, contentH = 0.f;
 
@@ -81,9 +83,15 @@ const Palette kFilterPalette = {{1.00f, 1.00f, 1.00f}, {1.00f, 0.35f, 0.35f}, {1
 const Palette kFogPalette = {{0.60f, 0.60f, 0.65f}, {1.00f, 1.00f, 1.00f}, {0.00f, 0.00f, 0.00f}, {0.80f, 0.10f, 0.10f},
                              {0.95f, 0.50f, 0.10f}, {0.10f, 0.60f, 0.20f}, {0.15f, 0.30f, 0.90f}, {0.50f, 0.15f, 0.70f}};
 
-const std::vector<std::string> kTabNames = {"General", "Color", "Effects", "Advanced", "Performance", "Settings", "Cheat"};
-const char* kPageTitles[] = {"GENERAL", "COLOR GRADING", "VISUAL EFFECTS", "ADVANCED", "PERFORMANCE", "MENU SETTINGS", "CHEAT"};
+const std::vector<std::string> kTabNames = {"General", "Color", "Effects", "Advanced", "Performance", "Settings", "Cheat", "TAS"};
+const char* kPageTitles[] = {"GENERAL", "COLOR GRADING", "VISUAL EFFECTS", "ADVANCED", "PERFORMANCE", "MENU SETTINGS", "CHEAT", "TAS TOOLS"};
 const std::vector<std::string> kCheatSub = {"Player", "Enemies", "Items", "ESP"};
+const std::vector<std::string> kTasSub = {"Time", "Splits", "Utility", "Crosshair"};
+const std::vector<std::string> kSpeedNames1 = {"0.01x", "0.05x", "0.1x", "0.25x", "0.5x"};
+const std::vector<std::string> kSpeedNames2 = {"0.75x", "1x", "1.5x", "2x", "3x", "5x"};
+const float kSpeedVals1[5] = {0.01f, 0.05f, 0.1f, 0.25f, 0.5f};
+const float kSpeedVals2[6] = {0.75f, 1.f, 1.5f, 2.f, 3.f, 5.f};
+const std::vector<std::string> kCrossNames = {"Dot", "Plus", "Gap", "Circle", "Ring", "X"};
 const std::vector<std::string> kColorSub = {"Basic", "Temperature", "Tint", "RGB"};
 const std::vector<std::string> kPresetNames = {"Default", "Warm", "Cold", "Vivid", "Cinematic", "Noir",
                                                "Night", "VHS", "Dreamy", "Horror", "Golden", "Sepia"};
@@ -298,6 +306,24 @@ void layout() {
     }
     ui.fpsX = clampf(ui.fpsX, 0.f, std::max(0.f, W - fpsBoxW));
     ui.fpsY = clampf(ui.fpsY, 0.f, std::max(0.f, H - fpsBoxH));
+
+    // the split panel: its size follows the text
+    {
+        float sc = S * fx.tas.splitsScale;
+        splitFont = std::max(10.f, std::round(11.f * sc));
+        splitLine = splitFont * 1.4f;
+        float nameW = 0.f;
+        if (gFont)
+            for (const SplitRow& r : gSv.rows) nameW = std::max(nameW, gFont->CalcTextSizeA(splitFont, FLT_MAX, 0, r.name.c_str()).x);
+        splitBoxW = std::max(130.f * sc, nameW + 76.f * sc);
+        splitBoxH = (float)(gSv.rows.size() + 1) * splitLine + 10.f * sc;
+        if (ui.splitX < 0.f || ui.splitY < 0.f) {
+            ui.splitX = 8.f * S;
+            ui.splitY = 8.f * S + fpsBoxH + 8.f * S;
+        }
+        ui.splitX = clampf(ui.splitX, 0.f, std::max(0.f, W - splitBoxW));
+        ui.splitY = clampf(ui.splitY, 0.f, std::max(0.f, H - splitBoxH));
+    }
 
     pw = std::min(W - 12.f * S, 540.f * S);
     ph = std::min(H - 12.f * S, 340.f * S);
@@ -948,6 +974,62 @@ void pageCheat() {
     }
 }
 
+void pageTas() {
+    segments(kTasSub, ui.tasSub, [](int i) { ui.tasSub = i; scroll = 0.f; }, 0.85f);
+    if (!st.tas.empty()) caption(st.tas, 3);
+    TasSettings& t = fx.tas;
+    switch (ui.tasSub) {
+        case 0: {  // ---- time
+            section("SPEEDHACK");
+            fxRow("Speedhack", t.speedOn, [](bool v) { fx.tas.speedOn = v; }, t.speed, 0.01f, 5.f, 0.01f, "0.00", [](float v) { fx.tas.speed = v; });
+            caption("The whole game runs at this speed, from 0.01x (almost stopped) to 5x. Your own pause menu is not touched.", 2);
+            int sel1 = -1, sel2 = -1;
+            for (int i = 0; i < 5; i++) if (std::fabs(t.speed - kSpeedVals1[i]) < 0.001f) sel1 = i;
+            for (int i = 0; i < 6; i++) if (std::fabs(t.speed - kSpeedVals2[i]) < 0.001f) sel2 = i;
+            caption("Presets");
+            segments(kSpeedNames1, sel1, [](int i) { fx.tas.speed = kSpeedVals1[i]; fx.tas.speedOn = true; }, 0.9f);
+            segments(kSpeedNames2, sel2, [](int i) { fx.tas.speed = kSpeedVals2[i]; fx.tas.speedOn = true; }, 0.9f);
+            section("AUDIO");
+            toggle("Audio sync", t.audioSync, [](bool v) { fx.tas.audioSync = v; });
+            caption("Sounds get higher or lower with the speed, so audio and picture stay together. The pitch stops at 0.05x and 3x.", 2);
+            break;
+        }
+        case 1: {  // ---- item splits
+            section("ITEM SPLITS");
+            toggle("Show the splits panel", t.splitsShow, [](bool v) { fx.tas.splitsShow = v; });
+            toggle("Auto list items", t.autoList, [](bool v) { fx.tas.autoList = v; });
+            toggle("Escape split", t.escapeSplit, [](bool v) { fx.tas.escapeSplit = v; });
+            caption("The panel lists every item with the time you picked it up. Auto list adds a new item to the list the first time you pick it up. With it off, only the items already in the list get a time. Escape is always the last row.", 4);
+            button("Reset splits and start the timer", [] { fx.tas.resetSplitsReq++; });
+            button("Clear the list", [] { fx.tas.clearListReq++; });
+            section("PANEL");
+            slider("Panel scale", t.splitsScale, 0.6f, 2.f, 0.05f, "0.00", [](float v) { fx.tas.splitsScale = v; });
+            slider("Panel opacity", t.splitsAlpha, 0.f, 1.f, 0.05f, "0.00", [](float v) { fx.tas.splitsAlpha = v; });
+            caption("Drag the panel on the screen to move it. The timer starts again at every scene load.", 2);
+            break;
+        }
+        case 2: {  // ---- utility
+            section("RESTART");
+            button("Restart", [] { fx.tas.restartReq++; });
+            caption("Loads the scene you are in again.", 1);
+            section("CUTSCENES");
+            toggle("Skip the bed cutscene", t.skipBed, [](bool v) { fx.tas.skipBed = v; });
+            toggle("Skip the ending cutscene", t.skipEnding, [](bool v) { fx.tas.skipEnding = v; });
+            caption("The cutscene is not cut out: it plays at 8x (bed) and 10x (ending), then the game goes on as usual.", 2);
+            break;
+        }
+        default: {  // ---- crosshair
+            section("CROSSHAIR");
+            toggle("Crosshair", t.crosshairOn, [](bool v) { fx.tas.crosshairOn = v; });
+            caption("Preset");
+            segments(kCrossNames, t.crosshairPreset, [](int i) { fx.tas.crosshairPreset = i; fx.tas.crosshairOn = true; }, 0.9f);
+            slider("Scale", t.crosshairScale, 0.5f, 3.f, 0.05f, "0.00", [](float v) { fx.tas.crosshairScale = v; });
+            slider("Opacity", t.crosshairAlpha, 0.f, 1.f, 0.05f, "0.00", [](float v) { fx.tas.crosshairAlpha = v; });
+            break;
+        }
+    }
+}
+
 void resetLook() {
     ui.scale = 1.f;
     gScaleDraft = 1.f;
@@ -962,7 +1044,7 @@ void resetLook() {
         ui.accent[i] = kAccents[0][i];
         ui.bg[i] = kBackgrounds[0][i];
     }
-    ui.eyeX = ui.eyeY = ui.panX = ui.panY = ui.fpsX = ui.fpsY = -1.f;
+    ui.eyeX = ui.eyeY = ui.panX = ui.panY = ui.fpsX = ui.fpsY = ui.splitX = ui.splitY = -1.f;
 }
 
 std::string gLogText;
@@ -1019,8 +1101,10 @@ void drawPanel() {
     float tx = x + 10.f * s, tw = sbW - 12.f * s, th = 32.f * s;
     float ty = y + hdrH + 4.f * s;
     // the tab list: General .. Performance, then Cheat (tab 6). Settings (tab 5) sits at the bottom.
-    const int kTopTabs[6] = {0, 1, 2, 3, 4, 6};
-    for (int i = 0; i < 6; i++) drawTab(kTopTabs[i], tx, ty + i * (th + 4.f * s), tw, th, acc);
+    const int kTopTabs[7] = {0, 1, 2, 3, 4, 6, 7};
+    th = 28.f * s;
+    for (int i = 0; i < 7; i++) drawTab(kTopTabs[i], tx, ty + i * (th + 3.f * s), tw, th, acc);
+    th = 32.f * s;
     float sy = y + ph - 12.f * s - th;
     fill(tx + 4.f * s, sy - 8.f * s, tw - 8.f * s, 1.f * s, Col(1.f, 1.f, 1.f, 0.10f));
     drawTab(5, tx, sy, tw, th, acc);
@@ -1050,6 +1134,7 @@ void drawPanel() {
         case 3: pageAdvanced(); break;
         case 4: pagePerf(); break;
         case 6: pageCheat(); break;
+        case 7: pageTas(); break;
         default: pageUi(); break;
     }
     contentH = (cy + scroll) - cTop;
@@ -1122,8 +1207,75 @@ void drawFps() {
     if (ui.showGraph) drawGraph(ui.fpsX, y, graphW, graphH);
 }
 
+// ================================================================ the split panel and the crosshair (always on screen)
+std::string fmtTime(double t) {
+    if (t < 0.0) return "--:--.--";
+    int m = (int)(t / 60.0);
+    double sec = t - m * 60.0;
+    char b[32];
+    snprintf(b, sizeof(b), "%02d:%05.2f", m, sec);
+    return b;
+}
+
+// a plain panel: dark box, one row per item, the time on the right
+void drawSplits() {
+    if (!fx.tas.splitsShow) return;
+    float sc = S * fx.tas.splitsScale;
+    float a = clampf(fx.tas.splitsAlpha, 0.f, 1.f);
+    float x = ui.splitX, y = ui.splitY;
+    rfill(x, y, splitBoxW, splitBoxH, 4.f * sc, Col(0.f, 0.f, 0.f, 0.72f * a));
+    float tx = x + 6.f * sc, rx = x + splitBoxW - 6.f * sc;
+    float ty = y + 5.f * sc;
+    auto row = [&](const std::string& name, const std::string& time, Col nc, Col tc) {
+        D->AddText(gFont, splitFont, ImVec2(tx, ty), U(withA(nc, a)), name.c_str());
+        float w = gFont->CalcTextSizeA(splitFont, FLT_MAX, 0, time.c_str()).x;
+        D->AddText(gFont, splitFont, ImVec2(rx - w, ty), U(withA(tc, a)), time.c_str());
+        ty += splitLine;
+    };
+    row("Time", fmtTime(gSv.timer), Col(0.75f, 0.78f, 0.85f, 1.f), gSv.running ? White : Col(0.35f, 0.84f, 0.48f, 1.f));
+    for (const SplitRow& r : gSv.rows) {
+        bool done = r.seconds >= 0.0;
+        row(r.name, fmtTime(r.seconds), done ? White : Col(0.55f, 0.58f, 0.65f, 1.f), done ? Col(0.35f, 0.84f, 0.48f, 1.f) : Col(0.55f, 0.58f, 0.65f, 1.f));
+    }
+}
+
+// six crosshairs, drawn with a dark edge so they show on any background
+void drawCrosshair() {
+    if (!fx.tas.crosshairOn) return;
+    float a = clampf(fx.tas.crosshairAlpha, 0.f, 1.f);
+    if (a <= 0.f) return;
+    float sc = S * fx.tas.crosshairScale;
+    float cx = std::round(W * 0.5f), cy2 = std::round(H * 0.5f);
+    ImU32 light = U(Col(1.f, 1.f, 1.f, a)), dark = U(Col(0.f, 0.f, 0.f, 0.75f * a));
+    float t = std::max(1.5f, 1.6f * sc), edge = std::max(1.f, 1.2f * sc);
+    auto line = [&](float x1, float y1, float x2, float y2) {
+        D->AddLine(ImVec2(cx + x1, cy2 + y1), ImVec2(cx + x2, cy2 + y2), dark, t + 2.f * edge);
+        D->AddLine(ImVec2(cx + x1, cy2 + y1), ImVec2(cx + x2, cy2 + y2), light, t);
+    };
+    auto dot = [&](float r) {
+        D->AddCircleFilled(ImVec2(cx, cy2), r + edge, dark, 16);
+        D->AddCircleFilled(ImVec2(cx, cy2), r, light, 16);
+    };
+    auto ring = [&](float r) {
+        D->AddCircle(ImVec2(cx, cy2), r, dark, 32, t + 2.f * edge);
+        D->AddCircle(ImVec2(cx, cy2), r, light, 32, t);
+    };
+    float L = 9.f * sc, g = 4.f * sc;
+    switch (clampi(fx.tas.crosshairPreset, 0, 5)) {
+        case 0: dot(2.2f * sc); break;                                   // dot
+        case 1: line(-L, 0, L, 0); line(0, -L, 0, L); break;             // plus
+        case 2:                                                          // plus with a gap
+            line(-L - g, 0, -g, 0); line(g, 0, L + g, 0);
+            line(0, -L - g, 0, -g); line(0, g, 0, L + g);
+            break;
+        case 3: ring(8.f * sc); break;                                   // circle
+        case 4: ring(9.f * sc); dot(1.8f * sc); break;                   // circle with a dot
+        default: line(-L, -L, L, L); line(-L, L, L, -L); break;          // X
+    }
+}
+
 // ================================================================ the finger
-enum Mode { ModeNone, ModeTap, ModeSlider, ModeEye, ModePanel, ModeScroll, ModeFps };
+enum Mode { ModeNone, ModeTap, ModeSlider, ModeEye, ModePanel, ModeScroll, ModeFps, ModeSplits };
 Mode gMode = ModeNone;
 bool gPtrDown = false, gMoved = false;
 float gDownX = 0, gDownY = 0, gLastX = 0, gLastY = 0;
@@ -1193,6 +1345,7 @@ void pointerDown(float x, float y) {
     }
     if (inside(x, y, ui.eyeX, ui.eyeY, ES, ES)) gMode = ModeEye;
     else if ((ui.showFps || ui.showGraph) && inside(x, y, ui.fpsX, ui.fpsY, fpsBoxW, fpsBoxH)) gMode = ModeFps;
+    else if (fx.tas.splitsShow && inside(x, y, ui.splitX, ui.splitY, splitBoxW, splitBoxH)) gMode = ModeSplits;
 }
 
 void pointerMove(float x, float y) {
@@ -1220,6 +1373,12 @@ void pointerMove(float x, float y) {
             if (gMoved && !ui.lock) {
                 ui.fpsX += dx;
                 ui.fpsY += dy;
+            }
+            break;
+        case ModeSplits:
+            if (gMoved && !ui.lock) {
+                ui.splitX += dx;
+                ui.splitY += dy;
             }
             break;
         case ModeTap:
@@ -1250,6 +1409,7 @@ void pointerUp(float x, float y) {
             break;
         case ModePanel:
         case ModeFps:
+        case ModeSplits:
             saveSoon();
             break;
         default: break;
@@ -1354,6 +1514,7 @@ void menuFrame(int w, int h) {
     W = (float)w;
     H = (float)h;
     st = currentStatus();
+    gSv = getSplitsView();
     if (gToastSeq < 0) gToastSeq = st.toastSeq;
     if (st.toastSeq != gToastSeq) {
         gToastSeq = st.toastSeq;
@@ -1370,7 +1531,9 @@ void menuFrame(int w, int h) {
     ImGui::NewFrame();
     D = ImGui::GetForegroundDrawList();
     hits.clear();
+    drawCrosshair();
     drawFps();
+    drawSplits();
     drawEye();
     if (ui.open) drawPanel();
     ImGui::Render();
