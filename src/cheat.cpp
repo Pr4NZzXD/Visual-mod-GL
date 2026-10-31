@@ -79,7 +79,7 @@ struct Off {
     // PlayerStatus
     size_t psPick = 0, psCam = 0;
     // PickRay
-    size_t prAmmo = 0, prSpray = 0, prReach = 0, prDrop1 = 0, prItemDrop = 0, prDropP = 0, prPrompt = 0, prButton = 0;
+    size_t prEmpty = 0, prHighlight = 0, prAmmo = 0, prSpray = 0, prReach = 0, prDrop1 = 0, prItemDrop = 0, prDropP = 0, prPrompt = 0, prButton = 0;
     // FallingHolder
     size_t fhHold = 0, fhDur = 0, fhDamaged = 0, fhDeath = 0, fhFalling = 0, fhLanding = 0, fhFell = 0, fhSound = 0, fhDurate = 0;
     // others
@@ -123,6 +123,7 @@ const EnemySpec kSpec[kEnemyCount] = {
 };
 struct EnemyOff {
     size_t agent = 0, blind = 0, det1 = 0, det2 = 0, follow = 0, noise = 0, timer = 0, tag = 0, dying = 0, health = 0;
+    size_t jump = 0, caught = 0, target = 0;  // god mode: the attack distance, the "caught you" flag, the spider's target flag
 };
 Il2CppClass* gEnemyCls[kEnemyCount] = {};
 EnemyOff gEO[kEnemyCount];
@@ -137,6 +138,8 @@ struct EnemyState {
     float rot[4] = {0, 0, 0, 1};
     bool blindSet = false, origBlind = false;
     bool detSet = false;
+    bool godSet = false;
+    float origJump = 0;
     float origDet1 = 0, origDet2 = 0;
     bool dead = false;
 };
@@ -170,14 +173,6 @@ bool activeIn(Il2CppObject* comp) {
     if (!comp || !ic.getGameObject || !ic.activeInH) return false;
     Il2CppObject* go = ic.getGameObject(comp);
     return go && ic.activeInH(go);
-}
-
-bool position(Il2CppObject* comp, float* out) {
-    if (!comp || !ic.getTransform || !ic.getPos) return false;
-    Il2CppObject* tr = ic.getTransform(comp);
-    if (!tr) return false;
-    ic.getPos(tr, out);
-    return true;
 }
 
 void stopAgent(Il2CppObject* agent, bool stop) {
@@ -259,6 +254,8 @@ void resolve() {
     O.fpsMoveDir = fieldChecked(cFps, "MobileFPS", "moveDirection", kTypeValue);
     O.psPick = fieldChecked(cPs, "PlayerStatus", "PickRay", kTypeRef);
     O.psCam = fieldChecked(cPs, "PlayerStatus", "PlayerCam", kTypeRef);
+    O.prEmpty = fieldChecked(cPick, "PickRay", "EmptyGun", kTypeBool);
+    O.prHighlight = fieldChecked(cPick, "PickRay", "T_HighlightItem", kTypeRef);
     O.prAmmo = fieldChecked(cPick, "PickRay", "AmmoAmount", kTypeR4);
     O.prSpray = fieldChecked(cPick, "PickRay", "SprayLeft", kTypeR4);
     O.prReach = fieldChecked(cPick, "PickRay", "RaycastDis", kTypeR4);
@@ -281,6 +278,10 @@ void resolve() {
     O.doorReach = fieldChecked(cDoor, "DoorRay", "RaycastDis", kTypeR4);
     O.trapReach = fieldChecked(cRayTraps, "RayRemoveTraps", "RaycastDis", kTypeR4);
 
+    for (const char* nm : {"MoreAmmo1", "MoreAmmo2", "ChargePoints", "IsCharged", "LoadedGun", "DartHasEnergy"}) {  // for the log only
+        FieldInfo* f = cPick ? A.class_get_field_from_name(cPick, nm) : nullptr;
+        if (f && A.field_get_type && A.type_get_type) logf("cheat: PickRay.%s has type %#x", nm, A.type_get_type(A.field_get_type(f)));
+    }
     mClick = findMethod(cPick, "HandleButtonClick", 0);
     mInstantiate = findExact(findClass("UnityEngine", "Object"), "Instantiate",
                              {"UnityEngine.Object", "UnityEngine.Vector3", "UnityEngine.Quaternion"});
@@ -308,6 +309,8 @@ void resolve() {
         if (sp.timer) e.timer = fieldChecked(c, sp.cls, sp.timer, kTypeR4);
         if (sp.tag) e.tag = fieldChecked(c, sp.cls, sp.tag, kTypeRef);
         if (k < 2) {
+            e.jump = fieldChecked(c, sp.cls, "DistanceJumpscare", kTypeR4);
+            e.caught = fieldChecked(c, sp.cls, "CaughtPlayer", kTypeBool);
             e.dying = fieldChecked(c, sp.cls, "IsDying", kTypeBool);
             gStopAI[k] = findMethod(c, "StopAI", 0);
             gDeadDisable[k] = findMethod(c, "DeadDisable", 0);
@@ -315,7 +318,10 @@ void resolve() {
         }
         if (k == 2) gKillM[k] = findMethod(c, "HitMom", 0);
         if (k == 3) e.health = fieldChecked(c, sp.cls, "Health", kTypeR4);
-        if (k == 4) gKillM[k] = findMethod(c, "Dies", 0);
+        if (k == 4) {
+            gKillM[k] = findMethod(c, "Dies", 0);
+            e.target = fieldChecked(c, sp.cls, "IsTargetingPlayer", kTypeBool);
+        }
         if (k == 5) gKillM[k] = findMethod(c, "KillAssBird", 0);
         if (k == 6) gKillM[k] = findMethod(c, "KnockedOut", 0);
     }
@@ -327,9 +333,9 @@ void resolve() {
 }
 
 // ---------------------------------------------------------------- hooks: god mode
-void (*gOrigPs[9])(void*, void*) = {};
-const char* const kPsNames[9] = {"NormalDeath",       "KnockDeath",          "PlayerGettingStopped", "MomDeath",          "DamageSpider",
-                                 "GrannyCaughtYou",   "GrannyCaughtYouBed",  "GrandpaCaughtYou",     "GrandpaCaughtYouBed"};
+void (*gOrigPs[10])(void*, void*) = {};
+const char* const kPsNames[10] = {"NormalDeath",       "KnockDeath",          "PlayerGettingStopped", "MomDeath",          "DamageSpider",
+                                 "GrannyCaughtYou",   "GrannyCaughtYouBed",  "GrandpaCaughtYou",     "GrandpaCaughtYouBed", "DamageFeet"};
 
 void forgetPlayer(int enemy) {  // the enemy "forgets" the player instead of running its caught sequence
     if (enemy < 0 || enemy > 1) return;
@@ -347,6 +353,13 @@ void psHook(void* self, void* mi) {
         return;
     }
     gOrigPs[I](self, mi);
+}
+
+void (*gOrigMomCaught)(void*, void*) = nullptr;
+void momCaughtHook(void* self, void* mi) {  // the Mom Spider's "eat the player" action
+    if (!gOrigMomCaught) return;
+    if (gC.godMode) return;
+    gOrigMomCaught(self, mi);
 }
 
 // ---------------------------------------------------------------- hooks: traps and the cracking floor
@@ -519,11 +532,33 @@ bool enemyPre(int k, Il2CppObject* o) {
     }
     if (s.dead) return true;
 
-    // blind
+    // god mode: the enemy cannot start an attack. Granny and Grandpa attack when they come closer than DistanceJumpscare,
+    // so that distance becomes 0 (put back when god mode ends); the "caught you" flag never stays up; the attic spider
+    // does not target you
+    if (k < 2 && e.jump) {
+        float* j = P<float>(o, e.jump);
+        if (gC.godMode) {
+            if (!s.godSet) {
+                s.origJump = *j;
+                s.godSet = true;
+            }
+            *j = 0.f;
+        } else if (s.godSet) {
+            *j = s.origJump;
+            s.godSet = false;
+        }
+    }
+    if (gC.godMode) {
+        if (e.caught) *P<bool>(o, e.caught) = false;
+        if (k == 4 && e.target) *P<bool>(o, e.target) = false;
+    }
+
+    // blind (the Little One is also blind while god mode is on: it has no other way to be told not to attack)
     if (kEnemyCan[k][1]) {
+        const bool wantBlind = want.blind || (gC.godMode && k == 6);
         if (e.blind) {
             bool* p = P<bool>(o, e.blind);
-            if (want.blind) {
+            if (wantBlind) {
                 if (!s.blindSet) {
                     s.origBlind = *p;
                     s.blindSet = true;
@@ -536,7 +571,7 @@ bool enemyPre(int k, Il2CppObject* o) {
         } else if (e.det1 && e.det2) {
             float* a = P<float>(o, e.det1);
             float* b = P<float>(o, e.det2);
-            if (want.blind) {
+            if (wantBlind) {
                 if (!s.detSet) {
                     s.origDet1 = *a;
                     s.origDet2 = *b;
@@ -600,13 +635,6 @@ void enemyHook(void* self, void* mi) {
 }
 
 // ---------------------------------------------------------------- items
-struct ItemEntry {
-    uint32_t handle = 0;
-    char name[28] = {0};
-};
-std::unordered_map<Il2CppObject*, ItemEntry> gItems;
-int64_t gItemScanAt = 0;
-
 struct Reach {
     float orig = 0, last = 0;
 };
@@ -657,41 +685,6 @@ void scanRayObjs(int64_t now) {
             gRayHandles.push_back(retain(el[i]));
             gRayKind.push_back(kind);
         }
-    }
-}
-
-void scanItems(int64_t now) {
-    bool need = gC.autoGrab;
-    if (!need) {
-        if (!gItems.empty()) {
-            for (auto& kv : gItems) release(kv.second.handle);
-            gItems.clear();
-        }
-        return;
-    }
-    if (now < gItemScanAt || !cSeed) return;
-    gItemScanAt = now + 250;
-    for (auto it = gItems.begin(); it != gItems.end();) {
-        if (!valid(it->first)) {
-            release(it->second.handle);
-            it = gItems.erase(it);
-        } else {
-            ++it;
-        }
-    }
-    Il2CppObject* arr = findObjectsOfType(cSeed);
-    if (!arr) return;
-    size_t n = A.array_length(arr);
-    Il2CppObject** el = arrayData(arr);
-    for (size_t i = 0; i < n && gItems.size() < 300; i++) {
-        Il2CppObject* o = el[i];
-        if (!valid(o) || gItems.count(o)) continue;
-        ItemEntry e;
-        e.handle = retain(o);
-        std::string nm = O.seedName ? str(reinterpret_cast<Il2CppString*>(ref(o, O.seedName))) : "";
-        if (nm.empty()) nm = "Item";
-        snprintf(e.name, sizeof(e.name), "%s", nm.c_str());
-        gItems.emplace(o, e);
     }
 }
 
@@ -778,51 +771,28 @@ bool spawnItem(Il2CppObject* pr, int index, const char** why) {
     return true;
 }
 
-// ---------------------------------------------------------------- the camera (auto grab)
-struct Cam {
-    float pos[3] = {0, 0, 0};
-    float fwd[3] = {0, 0, 1};
-};
-
-bool getCam(Cam& c) {
-    Il2CppObject* cam = gCamObj;
-    if (!valid(cam) || nowMs() - gFpsAt > 500 || !ic.getTransform || !ic.getPos || !ic.getRot) return false;
-    Il2CppObject* tr = ic.getTransform(cam);
-    if (!tr) return false;
-    ic.getPos(tr, c.pos);
-    float q[4];
-    ic.getRot(tr, q);
-    c.fwd[0] = 2.f * (q[0] * q[2] + q[3] * q[1]);
-    c.fwd[1] = 2.f * (q[1] * q[2] - q[3] * q[0]);
-    c.fwd[2] = 1.f - 2.f * (q[0] * q[0] + q[1] * q[1]);
-    return true;
-}
-
 // ---------------------------------------------------------------- auto grab
-Il2CppObject* gGrabTarget = nullptr;
-int64_t gGrabNext = 0;
+// The moment the game itself says "you are looking at something to pick up" (the pick-up prompt, or the item's name that
+// it writes on the screen) and the hand is free, the interact button is pressed. It does not look the item up in a list,
+// so it works for every pick-up, weapons included. It is tried on every frame until the hand is full.
 int gGrabTries = 0;
+int64_t gGrabNext = 0;
 bool gHandsWereFull = false;
-std::unordered_map<Il2CppObject*, int64_t> gGrabSkip;
+bool gGrabNote = false;
 
-bool promptShown(Il2CppObject* pr) {
-    Il2CppObject* img = ref(pr, O.prPrompt);
-    if (!valid(img) || !ic.behEnabled || !ic.behEnabled(img)) return false;
-    if (!activeIn(img)) return false;
-    Il2CppObject* btn = ref(pr, O.prButton);
-    if (btn && valid(btn) && ic.activeInH && !ic.activeInH(btn)) return false;
-    return true;
+// a UI object that is on screen: a component that is enabled and whose object is active, or a plain object that is active
+bool shownUi(Il2CppObject* o) {
+    if (!valid(o)) return false;
+    if (reinterpret_cast<Il2CppClass*>(*reinterpret_cast<void**>(o)) == cGo) return ic.activeInH && ic.activeInH(o);
+    return ic.behEnabled && ic.behEnabled(o) && activeIn(o);
 }
 
-// Auto grab: the moment the game itself shows the pick-up prompt (that is also when it shows the item's name) and an item
-// is in front of you, the interact button is pressed. No waiting: it is tried on every frame until the hand is full.
 void autoGrab(Il2CppObject* pr, int64_t now) {
-    if (!gC.autoGrab || !mClick || !O.prDrop1 || !O.prPrompt) return;
+    if (!gC.autoGrab || !mClick || !O.prDrop1 || (!O.prPrompt && !O.prHighlight)) return;
     Il2CppObject* hand = ref(pr, O.prDrop1);
     bool full = valid(hand) && ic.activeSelf && ic.activeSelf(hand);
     if (full) {
         gHandsWereFull = true;
-        gGrabTarget = nullptr;
         gGrabTries = 0;
         return;
     }
@@ -830,54 +800,58 @@ void autoGrab(Il2CppObject* pr, int64_t now) {
         gHandsWereFull = false;
         gGrabNext = now + 250;
     }
-    if (now < gGrabNext || !promptShown(pr)) {
-        gGrabTarget = nullptr;
+    bool prompt = shownUi(ref(pr, O.prPrompt));
+    bool name = shownUi(ref(pr, O.prHighlight));
+    if (name && !prompt && !gGrabNote) {
+        gGrabNote = true;
+        logf("cheat: auto grab: the item name is shown without the pick-up prompt (a weapon?): grabbing on the name");
+    }
+    if (now < gGrabNext || !(prompt || name)) {
         gGrabTries = 0;
         return;
     }
-
-    Cam cam;
-    if (!getCam(cam)) return;
-    float reach = O.prReach ? *P<float>(pr, O.prReach) : 3.f;
-    if (reach < 0.5f) reach = 0.5f;
-
-    Il2CppObject* best = nullptr;
-    float bestDot = 0.87f;  // about 30 degrees: the prompt already says the game is aiming at something, this only picks which item
-    for (auto& kv : gItems) {
-        Il2CppObject* it = kv.first;
-        if (!valid(it) || !activeIn(it)) continue;
-        auto sk = gGrabSkip.find(it);
-        if (sk != gGrabSkip.end()) {
-            if (now < sk->second) continue;
-            gGrabSkip.erase(sk);
-        }
-        float p[3];
-        if (!position(it, p)) continue;
-        float dx = p[0] - cam.pos[0], dy = p[1] - cam.pos[1], dz = p[2] - cam.pos[2];
-        float d = std::sqrt(dx * dx + dy * dy + dz * dz);
-        if (d < 0.05f || d > reach + 1.0f) continue;
-        float dot = (dx * cam.fwd[0] + dy * cam.fwd[1] + dz * cam.fwd[2]) / d;
-        if (dot > bestDot) {
-            bestDot = dot;
-            best = it;
-        }
-    }
-    if (!best) {
-        gGrabTarget = nullptr;
-        gGrabTries = 0;
-        return;
-    }
-    if (best != gGrabTarget) {
-        gGrabTarget = best;
-        gGrabTries = 0;
-    }
-    if (++gGrabTries > 40) {  // 40 frames in a row and nothing in the hand: it cannot be picked up (locked, held): leave it alone for a while
-        gGrabSkip[best] = now + 3000;
-        gGrabTarget = nullptr;
+    if (++gGrabTries > 40) {  // 40 frames in a row and nothing in the hand: it cannot be picked up (locked, held): wait a moment
+        gGrabNext = now + 1500;
         gGrabTries = 0;
         return;
     }
     invoke(mClick, pr, nullptr);
+}
+
+// Infinite ammo and spray: the amount goes back to the highest value seen, and the gun is never "empty" (a crossbow holds
+// so few darts that the empty flag goes up the moment the last one is shot, and putting the number back is not enough).
+int gAmmoLogged = 0;
+void supplies(Il2CppObject* pr) {
+    if (!pr) return;
+    if (gC.infAmmo && O.prAmmo) {
+        float* a = P<float>(pr, O.prAmmo);
+        if (*a > gAmmoMax) {
+            gAmmoMax = *a;
+        } else if (*a < gAmmoMax) {
+            if (gAmmoLogged++ < 20) logf("cheat: ammo %.1f -> %.1f, put back", *a, gAmmoMax);
+            *a = gAmmoMax;
+        }
+        if (O.prEmpty) *P<bool>(pr, O.prEmpty) = false;
+    } else {
+        gAmmoMax = 0.f;
+    }
+    if (gC.infSpray && O.prSpray) {
+        float* s = P<float>(pr, O.prSpray);
+        if (*s > gSprayMax) gSprayMax = *s;
+        else if (*s < gSprayMax) *s = gSprayMax;
+    } else {
+        gSprayMax = 0.f;
+    }
+}
+
+// the weapons' own update and shots: restored before and after, so nothing is ever seen empty
+void (*gOrigPick[3])(void*, void*) = {};
+template <int I>
+void pickHook(void* self, void* mi) {
+    if (!gOrigPick[I]) return;
+    supplies(reinterpret_cast<Il2CppObject*>(self));
+    gOrigPick[I](self, mi);
+    supplies(reinterpret_cast<Il2CppObject*>(self));
 }
 
 // ---------------------------------------------------------------- the player's update
@@ -887,8 +861,6 @@ void playerTick(Il2CppObject* fps) {
         gFps = fps;
         gReach.clear();
         gAmmoMax = gSprayMax = 0.f;
-        gGrabTarget = nullptr;
-        gGrabSkip.clear();
         gNoclipOn = false;
         logf("cheat: player found");
     }
@@ -928,20 +900,7 @@ void playerTick(Il2CppObject* fps) {
 
     if (!gPr) return;
 
-    if (gC.infAmmo && O.prAmmo) {
-        float* a = P<float>(gPr, O.prAmmo);
-        if (*a > gAmmoMax) gAmmoMax = *a;
-        else if (*a < gAmmoMax) *a = gAmmoMax;
-    } else {
-        gAmmoMax = 0.f;
-    }
-    if (gC.infSpray && O.prSpray) {
-        float* s = P<float>(gPr, O.prSpray);
-        if (*s > gSprayMax) gSprayMax = *s;
-        else if (*s < gSprayMax) *s = gSprayMax;
-    } else {
-        gSprayMax = 0.f;
-    }
+    supplies(gPr);
 
     float reach = gC.reach < 2.f ? 2.f : (gC.reach > 40.f ? 40.f : gC.reach);
     reachApply(gPr, O.prReach, gC.longReachOn, reach);
@@ -1079,10 +1038,17 @@ void install(HookInstaller hook) {
     H(cFall, "FallingHolder", "HandleLanding", 0, (void*)fallHook<2>, (void**)&gOrigFall[2]);
 
     // god mode: all nine have to be there
-    void* psRepl[9] = {(void*)psHook<0>, (void*)psHook<1>, (void*)psHook<2>, (void*)psHook<3>, (void*)psHook<4>,
-                       (void*)psHook<5>, (void*)psHook<6>, (void*)psHook<7>, (void*)psHook<8>};
-    for (int i = 0; i < 9; i++)
+    void* psRepl[10] = {(void*)psHook<0>, (void*)psHook<1>, (void*)psHook<2>, (void*)psHook<3>, (void*)psHook<4>,
+                       (void*)psHook<5>, (void*)psHook<6>, (void*)psHook<7>, (void*)psHook<8>, (void*)psHook<9>};
+    for (int i = 0; i < 10; i++)
         if (!H(cPs, "PlayerStatus", kPsNames[i], 0, psRepl[i], (void**)&gOrigPs[i])) gGodHooksOk = false;
+
+    if (!H(gEnemyCls[2], "AI_MomSpider", "MomCaughtPlayer", 0, (void*)momCaughtHook, (void**)&gOrigMomCaught)) gGodHooksOk = false;
+
+    // the weapons: ammo is put back around their own update and shots
+    H(cPick, "PickRay", "Update", 0, (void*)pickHook<0>, (void**)&gOrigPick[0]);
+    H(cPick, "PickRay", "ShootGun1", 0, (void*)pickHook<1>, (void**)&gOrigPick[1]);
+    H(cPick, "PickRay", "ShootGun2", 0, (void*)pickHook<2>, (void**)&gOrigPick[2]);
 
     // traps and the cracking floor
     H(findClass("", "TrapTrigger"), "TrapTrigger", "OnTriggerEnter", 1, (void*)trapHook<0>, (void**)&gOrigTrap[0]);
@@ -1149,7 +1115,6 @@ void tick(const CheatSettings& s) {
         clearRayObjs();
     }
 
-    scanItems(now);
     prune(now);
     status(now);
 }
