@@ -97,10 +97,10 @@ void runTick(int source, const char* name) {
     fog::tick(cur);
     perf::tick(cur);
     scene::tick(cur);
-    esp::tick(cur);
-    cheat::tick(cur.cheat);
-    tas::tick(cur.tas);
-    gInTick = false;
+   // esp::tick(cur);
+  // cheat::tick(cur.cheat);
+   // tas::tick(cur.tas);
+   gInTick = false;
 }
 
 // (a hook is live a moment before its "original" pointer is stored: guard against that gap)
@@ -252,8 +252,8 @@ void* bootstrap(void*) {
     blockTouchOf("OldTouchInput", (void*)hookTouch2, (void**)&gOrigTouch2);
 
     // the Cheat tab (every hook is optional: what cannot be hooked is shown in the menu)
-    cheat::install(installHook);
-    tas::install(installHook);
+   // cheat::install(installHook);
+  //  tas::install(installHook);
 
     logf("all set");
     return nullptr;

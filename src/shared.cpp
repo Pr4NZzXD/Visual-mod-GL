@@ -213,7 +213,7 @@ void fields(UiSettings& ui, FxSettings& fx, std::vector<Field>& out) {
     out.push_back({"accent", kHex, ui.accent, 0.f, 0.f});
     out.push_back({"bg", kHex, ui.bg, 0.f, 0.f});
     FB("open", ui.open);
-    FI("tab", ui.tab, 0, 7);
+    FI("tab", ui.tab, 0, 5);
     FI("colorSub", ui.colorSub, 0, 3);
     FI("cheatSub", ui.cheatSub, 0, 3);
     FI("tasSub", ui.tasSub, 0, 3);
@@ -264,7 +264,7 @@ void fields(UiSettings& ui, FxSettings& fx, std::vector<Field>& out) {
     FB("lightOn", fx.lightBoostOn);    FF("lightMul", fx.lightBoost, 1.f, 3.f);
     FB("fovOn", fx.fovOn);             FF("fov", fx.fov, 40.f, 110.f);
     // ---- fog
-    FI("fogMode", fx.fogMode, 0, 2);
+    FI("fogMode", fx.fogMode, 0, 0);
     FF("fogR", fx.fogR, 0.f, 1.f);
     FF("fogG", fx.fogG, 0.f, 1.f);
     FF("fogB", fx.fogB, 0.f, 1.f);
@@ -288,6 +288,7 @@ void fields(UiSettings& ui, FxSettings& fx, std::vector<Field>& out) {
     FB("perfAdaptive", fx.adaptive);
     FI("perfAdaptT", fx.adaptTarget, 0, 2);
     FB("perfAuto", fx.autoClean);
+    #if 0
     FB("espItems", fx.espItems);
     FB("espEnemies", fx.espEnemies);
     FB("espWalls", fx.espWalls);
@@ -340,6 +341,7 @@ void fields(UiSettings& ui, FxSettings& fx, std::vector<Field>& out) {
         FF("tasCrossScale", t.crosshairScale, 0.5f, 3.f);
         FF("tasCrossAlpha", t.crosshairAlpha, 0.f, 1.f);
     }
+    #endif
 #undef FB
 #undef FF
 #undef FI

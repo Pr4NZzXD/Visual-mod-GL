@@ -751,6 +751,7 @@ void pageGeneral() {
     section("PRESETS");
     presets(kPresetNames, gPresetSel, [](int i) { applyPreset(i); gPresetSel = i; });
     button("Reset to default", [] { resetValues(); gPresetSel = -1; });
+    #if 0
     section("FOG");
     segments(kFogModes, fx.fogMode, [](int i) { fx.fogMode = i; }, 1.f);
     caption(fx.fogMode == 1 ? "Fog is off."
@@ -761,6 +762,7 @@ void pageGeneral() {
         fx.fogMode = 2;  // picking a colour means "use my fog"
     });
     slider("Thickness", fx.fogThick, 0.f, 100.f, 1.f, "0", [](float v) { fx.fogThick = v; fx.fogMode = 2; });
+    #endif
     section("DISPLAY");
     toggle("Show FPS", ui.showFps, [](bool v) { ui.showFps = v; });
     toggle("Show frame graph", ui.showGraph, [](bool v) { ui.showGraph = v; });
@@ -1124,9 +1126,9 @@ void drawPanel() {
     float tx = x + 10.f * s, tw = sbW - 12.f * s, th = 32.f * s;
     float ty = y + hdrH + 4.f * s;
     // the tab list: General .. Performance, then Cheat (tab 6). Settings (tab 5) sits at the bottom.
-    const int kTopTabs[7] = {0, 1, 2, 3, 4, 6, 7};
+    const int kTopTabs[5] = {0, 1, 2, 3, 4,};
     th = 28.f * s;
-    for (int i = 0; i < 7; i++) drawTab(kTopTabs[i], tx, ty + i * (th + 3.f * s), tw, th, acc);
+    for (int i = 0; i < 5; i++) drawTab(kTopTabs[i], tx, ty + i * (th + 3.f * s), tw, th, acc);
     th = 32.f * s;
     float sy = y + ph - 12.f * s - th;
     fill(tx + 4.f * s, sy - 8.f * s, tw - 8.f * s, 1.f * s, Col(1.f, 1.f, 1.f, 0.10f));
