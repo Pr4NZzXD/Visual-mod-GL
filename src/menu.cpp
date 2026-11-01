@@ -751,7 +751,6 @@ void pageGeneral() {
     section("PRESETS");
     presets(kPresetNames, gPresetSel, [](int i) { applyPreset(i); gPresetSel = i; });
     button("Reset to default", [] { resetValues(); gPresetSel = -1; });
-    #if 0
     section("FOG");
     segments(kFogModes, fx.fogMode, [](int i) { fx.fogMode = i; }, 1.f);
     caption(fx.fogMode == 1 ? "Fog is off."
@@ -762,7 +761,6 @@ void pageGeneral() {
         fx.fogMode = 2;  // picking a colour means "use my fog"
     });
     slider("Thickness", fx.fogThick, 0.f, 100.f, 1.f, "0", [](float v) { fx.fogThick = v; fx.fogMode = 2; });
-    #endif
     section("DISPLAY");
     toggle("Show FPS", ui.showFps, [](bool v) { ui.showFps = v; });
     toggle("Show frame graph", ui.showGraph, [](bool v) { ui.showGraph = v; });
@@ -1094,6 +1092,8 @@ void pageUi() {
     section("BEHAVIOUR");
     toggle("Rounded corners", ui.rounded, [](bool v) { ui.rounded = v; });
     toggle("Lock icon and menu position", ui.lock, [](bool v) { ui.lock = v; });
+    toggle("Hide the eye while playing", ui.hideInGame, [](bool v) { ui.hideInGame = v; });
+    caption("The eye is gone while you play. It is back in the main menu and when the game is paused.", 2);
     button("Reset menu look", [] { resetLook(); });
     section("LOG");
     button("Show last log lines", [] { gLogText = logTail(22); gLogShown = true; });
@@ -1126,9 +1126,9 @@ void drawPanel() {
     float tx = x + 10.f * s, tw = sbW - 12.f * s, th = 32.f * s;
     float ty = y + hdrH + 4.f * s;
     // the tab list: General .. Performance, then Cheat (tab 6). Settings (tab 5) sits at the bottom.
-    const int kTopTabs[5] = {0, 1, 2, 3, 4,};
+    const int kTopTabs[7] = {0, 1, 2, 3, 4, 6, 7};
     th = 28.f * s;
-    for (int i = 0; i < 5; i++) drawTab(kTopTabs[i], tx, ty + i * (th + 3.f * s), tw, th, acc);
+    for (int i = 0; i < 7; i++) drawTab(kTopTabs[i], tx, ty + i * (th + 3.f * s), tw, th, acc);
     th = 32.f * s;
     float sy = y + ph - 12.f * s - th;
     fill(tx + 4.f * s, sy - 8.f * s, tw - 8.f * s, 1.f * s, Col(1.f, 1.f, 1.f, 0.10f));
@@ -1174,7 +1174,10 @@ void drawPanel() {
     }
 }
 
+bool eyeHidden() { return ui.hideInGame && gGameState.load() == 1; }
+
 void drawEye() {
+    if (eyeHidden()) return;
     float a = ui.iconAlpha;
     Col acc = accentNow();
     float r = ES * 0.5f;
@@ -1244,7 +1247,7 @@ std::string fmtTime(double t) {
 
 // a plain panel: dark box, one row per item, the time on the right
 void drawSplits() {
-    if (!fx.tas.splitsShow) return;
+    if (!fx.tas.splitsShow || gGameState.load() < 1) return;  // not in the main menu
     float sc = S * fx.tas.splitsScale;
     float a = clampf(fx.tas.splitsAlpha, 0.f, 1.f);
     float x = ui.splitX, y = ui.splitY;
@@ -1286,7 +1289,7 @@ void drawRestartBtn() {
 
 // six crosshairs, drawn with a dark edge so they show on any background
 void drawCrosshair() {
-    if (!fx.tas.crosshairOn) return;
+    if (!fx.tas.crosshairOn || gGameState.load() != 1) return;  // only while playing
     float a = clampf(fx.tas.crosshairAlpha, 0.f, 1.f);
     if (a <= 0.f) return;
     float sc = S * fx.tas.crosshairScale;
@@ -1362,7 +1365,7 @@ void pointerDown(float x, float y) {
     gMode = ModeNone;
     gHasTap = gHasActive = false;
 
-    if (ui.open && inside(x, y, ui.panX, ui.panY, pw, ph)) {
+    if (ui.open && !eyeHidden() && inside(x, y, ui.panX, ui.panY, pw, ph)) {
         const Hit* h = findHit(x, y);
         if (y < ui.panY + hdrH) {
             if (h) {
@@ -1388,10 +1391,10 @@ void pointerDown(float x, float y) {
         gMode = ModeTap;  // becomes a scroll if the finger moves
         return;
     }
-    if (inside(x, y, ui.eyeX, ui.eyeY, ES, ES)) gMode = ModeEye;
+    if (!eyeHidden() && inside(x, y, ui.eyeX, ui.eyeY, ES, ES)) gMode = ModeEye;
     else if ((ui.showFps || ui.showGraph) && inside(x, y, ui.fpsX, ui.fpsY, fpsBoxW, fpsBoxH)) gMode = ModeFps;
     else if (fx.tas.restartBtn && inside(x, y, ui.restartX, ui.restartY, restartD, restartD)) gMode = ModeRestart;
-    else if (fx.tas.splitsShow && inside(x, y, ui.splitX, ui.splitY, splitBoxW, splitBoxH)) gMode = ModeSplits;
+    else if (fx.tas.splitsShow && gGameState.load() >= 1 && inside(x, y, ui.splitX, ui.splitY, splitBoxW, splitBoxH)) gMode = ModeSplits;
 }
 
 void pointerMove(float x, float y) {
@@ -1595,7 +1598,7 @@ void menuFrame(int w, int h) {
     drawSplits();
     drawRestartBtn();
     drawEye();
-    if (ui.open) drawPanel();
+    if (ui.open && !eyeHidden()) drawPanel();
     ImGui::Render();
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 

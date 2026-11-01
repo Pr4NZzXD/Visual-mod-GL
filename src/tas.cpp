@@ -287,7 +287,10 @@ std::set<std::string> gOff;       // items the filter has switched off
 bool gFilterLoaded = false, gRouteDirty = true;
 bool gEscapeDone = false;
 double gEscapeT = -1.0;
-double gTimerStart = 0.0, gTimerStop = -1.0;  // gTimerStop >= 0: the timer is stopped (escaped)
+double gTimerAccum = 0.0;   // seconds of play: counts only while the game is played, not in a menu and not when paused
+bool gTimerStopped = false; // the run is over (escaped)
+double gLastClock = 0.0;
+bool gPlaying = false;
 std::vector<std::string> gPicks;              // names the hook saw, handled in tick
 int gEscapeEvents = 0;
 std::string gEscapeName;
@@ -431,24 +434,26 @@ void syncRoute() {
 
 // a new run (restart, new scene, the Reset button)
 void resetRun(double now) {
+    (void)now;
     for (Split& s : gRoute) s.t = -1.0;
     if (S.autoList) gRoute.clear();
     gRouteDirty = true;
     gEscapeDone = false;
     gEscapeT = -1.0;
-    gTimerStart = now;
-    gTimerStop = -1.0;
+    gTimerAccum = 0.0;
+    gTimerStopped = false;
 }
 
 void handlePicks(double now) {
+    (void)now;
     if (gPicks.empty()) return;
     std::vector<std::string> picks;
     picks.swap(gPicks);
     for (const std::string& raw : picks) {
         std::string name = pretty(raw);
         addItem(name);  // the filter page knows every item that was ever seen
-        if (gTimerStop >= 0.0 || !isOn(name)) continue;
-        double t = now - gTimerStart;
+        if (gTimerStopped || !isOn(name)) continue;
+        double t = gTimerAccum;
         bool found = false;
         for (Split& s : gRoute) {
             if (s.name == name) {
@@ -475,8 +480,8 @@ void handleEscape(double now) {
     gEscapeEvents = 0;
     if (gEscapeDone) return;
     gEscapeDone = true;
-    gEscapeT = now - gTimerStart;
-    gTimerStop = now;
+    gEscapeT = gTimerAccum;
+    gTimerStopped = true;
     logf("tas: escape (%s) at %.2f", gEscapeName.c_str(), gEscapeT);
     if (S.skipEnding) {  // play the ending cutscene fast
         gFfUntil = now + 60.0;
@@ -521,11 +526,28 @@ void publishSplits(double now, bool force) {
         r.seconds = gEscapeT;
         v.rows.push_back(r);
     }
-    v.running = gTimerStop < 0.0;
-    v.timer = (gTimerStop >= 0.0 ? gTimerStop : now) - gTimerStart;
+    v.running = !gTimerStopped && gPlaying;
+    v.timer = gTimerAccum;
     v.items = gItems;
     for (const std::string& n : gItems) v.itemOn.push_back(isOn(n) ? 1 : 0);
     setSplitsView(v);
+}
+
+// ---------------------------------------------------------------- is the game being played?
+// A player exists only in the game scenes: the player's update runs every frame there (also when paused, because a
+// pause is a time scale of 0). So: no player = main menu or loading, a player and a time scale of 0 = paused.
+void gameStateTick(double now) {
+    int64_t abs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    int64_t seen = gPlayerSeenMs.load();
+    bool haveSignal = seen != 0;
+    bool player = haveSignal ? (abs - seen < 700) : true;  // without the signal everything is shown, as before
+    float ts = u.tsGet ? u.tsGet() : 1.f;
+    bool paused = player && ts < 0.0001f;
+    gPlaying = player && !paused;
+    gGameState.store(!player ? 0 : (paused ? 2 : 1));
+    double dt = now - gLastClock;
+    gLastClock = now;
+    if (gPlaying && !gTimerStopped && dt > 0.0) gTimerAccum += dt > 0.25 ? 0.25 : dt;  // a long gap (the app in the background) is not play time
 }
 
 // ---------------------------------------------------------------- hooks
@@ -678,7 +700,7 @@ void tick(const TasSettings& s) {
         first = false;
         lastRestart = s.restartReq;
         lastReset = s.resetSplitsReq;
-        gTimerStart = now;
+        gLastClock = now;
     }
 
     // a new scene: the timer starts again, a fast-forward ends
@@ -720,6 +742,7 @@ void tick(const TasSettings& s) {
         lastAuto = s.autoList;
         gRouteDirty = true;
     }
+    gameStateTick(now);
     handleFilterChanges();
     discoverItems(now);
     syncRoute();

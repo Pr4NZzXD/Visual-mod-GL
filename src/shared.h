@@ -223,6 +223,7 @@ struct UiSettings {
     bool showFps = false;
     bool showGraph = false;
     bool lock = false;
+    bool hideInGame = false;   // the eye and the menu are hidden while playing (not in the main menu, not when paused)
     bool rainbow = false;
     bool rounded = true;
     float scale = 1.f;
@@ -275,6 +276,11 @@ float measuredFps();
 
 // true while a finger that started on the menu is down: the game ignores that touch
 extern std::atomic<bool> gBlockTouch;
+
+// What the game is doing now: 0 menu or loading (no player), 1 playing, 2 paused (a player, time scale 0).
+// gPlayerSeenMs is the last time the player's update ran (steady clock, milliseconds).
+extern std::atomic<int> gGameState;
+extern std::atomic<int64_t> gPlayerSeenMs;
 
 // settings file
 void settingsLoad(UiSettings& ui, FxSettings& fx);
