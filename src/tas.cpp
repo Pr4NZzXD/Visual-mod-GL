@@ -552,7 +552,7 @@ void gameStateTick(double now) {
 
 // ---------------------------------------------------------------- hooks
 using Fn3 = uint64_t (*)(void*, void*, void*);
-Fn3 oPick = nullptr, oEscDoor = nullptr, oEscCar = nullptr, oEscCellar = nullptr, oEscRobo = nullptr, oBedG = nullptr, oBedP = nullptr;
+Fn3 oPick = nullptr, oEscDoor = nullptr, oEscCar = nullptr, oEscCellar = nullptr, oEscRobo = nullptr;
 bool gPickIsString = true;
 
 void onPick(void* arg) {
@@ -608,20 +608,14 @@ uint64_t hEndProc(void* a, void* b, void* c) {
     }
     return oEndProc ? oEndProc(a, b, c) : 0;
 }
-uint64_t hBedG(void* a, void* b, void* c) {
-    bedCaught();
-    return oBedG ? oBedG(a, b, c) : 0;
-}
-uint64_t hBedP(void* a, void* b, void* c) {
-    bedCaught();
-    return oBedP ? oBedP(a, b, c) : 0;
-}
 
 std::string gStatus = "TAS: waiting for the game to start.";
 std::vector<std::string> gFailed;
 int gHookOk = 0, gHookTotal = 0;
 
 }  // namespace
+
+void onBedCaught() { bedCaught(); }
 
 void install(HookInstaller hook) {
     resolveUnity();
@@ -661,8 +655,7 @@ void install(HookInstaller hook) {
     H("Escapes", "EscapeCar", 0, (void*)hEscCar, (void**)&oEscCar);
     H("Escapes", "EscapeCellar", 0, (void*)hEscCellar, (void**)&oEscCellar);
     H("Escapes", "EscapeRobo", 0, (void*)hEscRobo, (void**)&oEscRobo);
-    H("PlayerStatus", "GrannyCaughtYouBed", 0, (void*)hBedG, (void**)&oBedG);
-    H("PlayerStatus", "GrandpaCaughtYouBed", 0, (void*)hBedP, (void**)&oBedP);
+    // the two bed catches are hooked by the cheat module, which calls onBedCaught()
     H("Gameovers", "EndProcess", 0, (void*)hEndProc, (void**)&oEndProc);
 
     // Time.timeScale: so that the game cannot fight the speed (see above)

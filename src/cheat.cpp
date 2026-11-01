@@ -865,7 +865,6 @@ void playerTick(Il2CppObject* fps) {
         logf("cheat: player found");
     }
     gFpsAt = now;
-    gPlayerSeenMs.store(now);
     gPlayerCc = ref(fps, O.fpsCc);
     Il2CppObject* ps = ref(fps, O.fpsPs);
     gPs = ps;

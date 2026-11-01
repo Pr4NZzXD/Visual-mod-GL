@@ -10,6 +10,10 @@ using HookInstaller = bool (*)(void* target, void* replacement, void** original,
 // Called once from the boot thread, after il2cpp is ready. Whatever cannot be hooked is logged and shown in the tab.
 void install(HookInstaller hook);
 
+// Called by the cheat module's hook of PlayerStatus.GrannyCaughtYouBed / GrandpaCaughtYouBed (one function can only be
+// hooked once, so the two modules share that hook): the "skip the bed cutscene" option starts here.
+void onBedCaught();
+
 // Runs on the game's main thread, once per frame, with the newest settings from the menu.
 void tick(const TasSettings& s);
 

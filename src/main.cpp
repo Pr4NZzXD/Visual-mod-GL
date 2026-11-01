@@ -8,10 +8,11 @@
 #include <atomic>
 #include <chrono>
 #include <cstring>
+#include <unordered_set>
 
 #include "And64InlineHook.hpp"
-#include "effects.h"
 #include "cheat.h"
+#include "effects.h"
 #include "esp.h"
 #include "fog.h"
 #include "il2cpp.h"
@@ -30,6 +31,13 @@ namespace {
 bool installHook(void* target, void* replacement, void** original, const char* what) {
     if (!target) {
         logf("hook %s: address not found", what);
+        return false;
+    }
+    // Two inline hooks on the same function would be stacked on each other's patched bytes, which is fragile on arm64.
+    // The modules share what they need instead, so this should never fire: if it does, the log says which one.
+    static std::unordered_set<void*> hooked;
+    if (!hooked.insert(target).second) {
+        logf("hook %s: this function is already hooked by another part of the mod, skipped", what);
         return false;
     }
     if (original) *original = nullptr;
@@ -97,10 +105,10 @@ void runTick(int source, const char* name) {
     fog::tick(cur);
     perf::tick(cur);
     scene::tick(cur);
-   // esp::tick(cur);
-  // cheat::tick(cur.cheat);
-   // tas::tick(cur.tas);
-   gInTick = false;
+    esp::tick(cur);
+    cheat::tick(cur.cheat);
+    tas::tick(cur.tas);
+    gInTick = false;
 }
 
 // (a hook is live a moment before its "original" pointer is stored: guard against that gap)
@@ -251,9 +259,9 @@ void* bootstrap(void*) {
     blockTouchOf("GetTouchInput", (void*)hookTouch1, (void**)&gOrigTouch1);
     blockTouchOf("OldTouchInput", (void*)hookTouch2, (void**)&gOrigTouch2);
 
-    // the Cheat tab (every hook is optional: what cannot be hooked is shown in the menu)
-   // cheat::install(installHook);
-  //  tas::install(installHook);
+    // the Cheat and TAS tabs (every hook is optional: what cannot be hooked is shown in the menu)
+    cheat::install(installHook);
+    tas::install(installHook);
 
     logf("all set");
     return nullptr;
