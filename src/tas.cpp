@@ -42,6 +42,9 @@ struct U {
     const MethodInfo *mApGet = nullptr, *mApSet = nullptr;
     Il2CppObject* (*getGo)(void*) = nullptr;   // Component.gameObject
     bool (*activeInH)(void*) = nullptr;        // GameObject.activeInHierarchy
+    bool (*animPlaying)(void*) = nullptr;      // Animation.isPlaying
+    float (*fxGet)() = nullptr;                // Time.fixedDeltaTime
+    void (*fxSet)(float) = nullptr;
     const MethodInfo *mActiveScene = nullptr, *mBuildIdx = nullptr, *mNameOf = nullptr, *mLoadInt = nullptr, *mLoadStr = nullptr;
 } u;
 
@@ -52,6 +55,9 @@ void resolveUnity() {
     u.tsSet = reinterpret_cast<void (*)(float)>(icall("UnityEngine.Time::set_timeScale"));
     u.getGo = reinterpret_cast<Il2CppObject* (*)(void*)>(icall("UnityEngine.Component::get_gameObject"));
     u.activeInH = reinterpret_cast<bool (*)(void*)>(icall("UnityEngine.GameObject::get_activeInHierarchy"));
+    u.animPlaying = reinterpret_cast<bool (*)(void*)>(icall("UnityEngine.Animation::get_isPlaying"));
+    u.fxGet = reinterpret_cast<float (*)()>(icall("UnityEngine.Time::get_fixedDeltaTime"));
+    u.fxSet = reinterpret_cast<void (*)(float)>(icall("UnityEngine.Time::set_fixedDeltaTime"));
     u.cAudio = findClass("UnityEngine", "AudioSource");
     u.apGet = reinterpret_cast<float (*)(void*)>(icall("UnityEngine.AudioSource::get_pitch"));
     u.apSet = reinterpret_cast<void (*)(void*, float)>(icall("UnityEngine.AudioSource::set_pitch"));
@@ -99,12 +105,33 @@ void hSetTs(float v, const void* mi) {
 bool gTsApplied = false;
 float gTsOrig = 1.f;
 
+// A fast-forward makes the game run many physics steps per frame, which is what makes it lag. So while it lasts the length of
+// a physics step grows with the speed (the number of steps per frame stays the same) and is put back afterwards.
+bool gFixedApplied = false;
+float gFixedOrig = 0.02f;
+void fixedStepTick(bool ff, float speed) {
+    if (!u.fxGet || !u.fxSet) return;
+    if (ff) {
+        if (!gFixedApplied) {
+            gFixedOrig = u.fxGet();
+            if (gFixedOrig < 0.001f || gFixedOrig > 0.1f) return;  // not a value to trust
+            gFixedApplied = true;
+        }
+        float want = gFixedOrig * clampf(speed, 1.f, 12.f);
+        if (std::fabs(u.fxGet() - want) > 0.0001f) u.fxSet(want);
+    } else if (gFixedApplied) {
+        u.fxSet(gFixedOrig);
+        gFixedApplied = false;
+    }
+}
+
 void timeTick(double now) {
     if (!u.tsGet || !u.tsSet) return;
     float want = -1.f;
     if (now < gFfUntil) want = gFfSpeed;
     else if (S.speedOn) want = clampf(S.speed, 0.01f, 5.f);
     gForce = want;
+    fixedStepTick(now < gFfUntil, gFfSpeed);
     float cur = u.tsGet();
     if (want > 0.f) {
         if (!gTsApplied) {
@@ -539,15 +566,21 @@ void publishSplits(double now, bool force) {
 }
 
 // ---------------------------------------------------------------- the start of a level
-// A level starts with a cutscene (you wake up in bed), then the text "Day N" shows up and you can play. The run should
+// A level starts with a cutscene (you wake up in bed), then the picture "Day N" fades in and you can play. The run should
 // begin there, not before it. Until then: the timer is held at 0, the cutscene can be played fast (Skip the bed
-// cutscene), and the speedhack can be left off (Auto). Everything is read from the game's own objects: the Days object
-// (the day texts, BeganDay) and the player (may it move?). Every change of those is written to the log, so a game
-// that behaves differently can be seen there.
+// cutscene), and the speedhack can be left off (Auto).
+//
+// What the game's own objects say (types read from the game's data):
+//   Days.Text_Day1..6   UI Images: the picture "Day N". They are never switched on or off, they FADE: the alpha of the colour
+//                       goes up. So "the day text is up" = the object is active and its alpha is above 0.05.
+//   Days.PlayerBedAnim  the Animation of the bed cutscene. isPlaying goes from true to false when it is over.
+//   Days.BeganDay, MobileFPS.AbleToMove / isAllowedToMove: only used when they change; the movement flags are already
+//                       true during the cutscene in this game.
+// Every change of these is written to the log (lines "tas: level start +..."), so a game that behaves differently shows there.
 struct Intro {
     bool resolved = false;
-    Il2CppClass *cDays = nullptr, *cFps = nullptr, *cGo = nullptr;
-    size_t began = 0, able = 0, allow = 0;
+    Il2CppClass *cDays = nullptr, *cFps = nullptr;
+    size_t began = 0, able = 0, allow = 0, bedAnim = 0, color = 0;
     size_t text[7] = {0, 0, 0, 0, 0, 0, 0};
     int texts = 0;
 } IN;
@@ -558,7 +591,10 @@ double gIntroSceneAt = 0.0, gIntroStart = -1.0, gIntroFind = 0.0;
 bool gIntroFf = false;          // the fast-forward in progress is the intro's
 Il2CppObject *gDays = nullptr, *gFpsObj = nullptr;
 uint32_t gDaysH = 0, gFpsH = 0;
-bool pText[7] = {}, pBegan = false, pAble = false, pAllow = false;
+bool pText[7] = {}, pBegan = false, pAble = false, pAllow = false, pBed = false;
+bool gSawBed = false;           // the bed animation was seen playing
+double gBedEndAt = -1.0;        // when it stopped
+float pAlpha = 0.f;
 int gIntroLogs = 0;
 int gIntroScene = -999999;
 
@@ -567,9 +603,11 @@ void resolveIntro() {
     IN.resolved = true;
     IN.cDays = findClass("", "Days");
     IN.cFps = findClass("", "MobileFPS");
-    IN.cGo = findClass("UnityEngine", "GameObject");
+    Il2CppClass* cGraphic = findClass("UnityEngine.UI", "Graphic");
+    if (cGraphic) IN.color = fieldChecked(cGraphic, "Graphic", "m_Color", kTypeValue);
     if (IN.cDays) {
         IN.began = fieldChecked(IN.cDays, "Days", "BeganDay", kTypeBool);
+        IN.bedAnim = fieldChecked(IN.cDays, "Days", "PlayerBedAnim", kTypeRef);
         static const char* const kText[7] = {"Text_Day1", "Text_Day2", "Text_Day3", "Text_Day4", "Text_Day5", "Text_Day5Final", "Text_Day6"};
         for (int i = 0; i < 7; i++) {
             IN.text[i] = fieldChecked(IN.cDays, "Days", kText[i], kTypeRef);
@@ -580,8 +618,8 @@ void resolveIntro() {
         IN.able = fieldChecked(IN.cFps, "MobileFPS", "AbleToMove", kTypeBool);
         IN.allow = fieldChecked(IN.cFps, "MobileFPS", "isAllowedToMove", kTypeBool);
     }
-    logf("tas: level start: Days %s, %d day texts, BeganDay %s, movement flags %s", IN.cDays ? "found" : "MISSING", IN.texts,
-         IN.began ? "ok" : "no", (IN.able || IN.allow) ? "ok" : "no");
+    logf("tas: level start: Days %s, %d day pictures (colour %s), bed animation %s, BeganDay %s", IN.cDays ? "found" : "MISSING", IN.texts,
+         IN.color ? "ok" : "MISSING", (IN.bedAnim && u.animPlaying) ? "ok" : "no", IN.began ? "ok" : "no");
 }
 
 void dropIntroObjects() {
@@ -591,10 +629,16 @@ void dropIntroObjects() {
     gDaysH = gFpsH = 0;
 }
 
-bool uiShown(Il2CppObject* o) {
-    if (!o || !alive(o) || !u.activeInH) return false;
-    Il2CppObject* go = (classOf(o) == IN.cGo) ? o : (u.getGo ? u.getGo(o) : nullptr);
-    return go && u.activeInH(go);
+float imageAlpha(Il2CppObject* img) { return IN.color ? *fieldPtr<float>(img, IN.color + 12) : 1.f; }
+
+// a day picture that can be seen: its object is active and it is not faded out
+bool pictureUp(Il2CppObject* img, float* alpha) {
+    if (!img || !alive(img) || !u.activeInH || !u.getGo) return false;
+    Il2CppObject* go = u.getGo(img);
+    if (!go || !u.activeInH(go)) return false;
+    float a = imageAlpha(img);
+    if (alpha && a > *alpha) *alpha = a;
+    return a > 0.05f;
 }
 
 bool findIntroObjects() {
@@ -623,18 +667,23 @@ bool findIntroObjects() {
 
 struct Sig {
     bool text[7];
-    bool began, able, allow;
+    bool began, able, allow, bed;
     bool anyText;
+    float alpha;
 };
 Sig readSignals() {
     Sig g = {};
     for (int i = 0; i < 7; i++) {
-        g.text[i] = IN.text[i] && gDays && uiShown(*fieldPtr<Il2CppObject*>(gDays, IN.text[i]));
+        g.text[i] = IN.text[i] && gDays && pictureUp(*fieldPtr<Il2CppObject*>(gDays, IN.text[i]), &g.alpha);
         g.anyText = g.anyText || g.text[i];
     }
     g.began = IN.began && gDays && *fieldPtr<bool>(gDays, IN.began);
     g.able = IN.able && gFpsObj && *fieldPtr<bool>(gFpsObj, IN.able);
     g.allow = IN.allow && gFpsObj && *fieldPtr<bool>(gFpsObj, IN.allow);
+    if (IN.bedAnim && gDays && u.animPlaying) {
+        Il2CppObject* an = *fieldPtr<Il2CppObject*>(gDays, IN.bedAnim);
+        g.bed = an && alive(an) && u.animPlaying(an);
+    }
     return g;
 }
 
@@ -661,12 +710,14 @@ void introNewScene(double now) {
     gIntroStart = -1.0;
     gIntroFind = 0.0;
     gIntroLogs = 0;
+    gSawBed = false;
+    gBedEndAt = -1.0;
     dropIntroObjects();
 }
 
 void introTick(double now) {
     resolveIntro();
-    if (!IN.cDays || !IN.texts) return;  // the game has no such intro: the timer works as before
+    if (!IN.cDays || !IN.texts || !IN.color) return;  // the game has no such intro: the timer works as before
 
     if (gIntroWatch) {
         if (!gPlayerHere) {
@@ -688,8 +739,8 @@ void introTick(double now) {
         }
         Sig g = readSignals();
         gIntroWatch = false;
-        if (g.anyText) {  // the day text is already up: nothing to wait for
-            logf("tas: level start: the day text is already showing, the timer runs from the start");
+        if (g.anyText) {  // the day picture is already up: nothing to wait for
+            logf("tas: level start: the day picture is already up (alpha %.2f), the timer runs from the start", g.alpha);
             dropIntroObjects();
             return;
         }
@@ -699,7 +750,10 @@ void introTick(double now) {
         pBegan = g.began;
         pAble = g.able;
         pAllow = g.allow;
-        logf("tas: level start: the cutscene is on, the timer waits (BeganDay %d, can move %d/%d)", g.began, g.able, g.allow);
+        pBed = g.bed;
+        gSawBed = g.bed;
+        gBedEndAt = -1.0;
+        logf("tas: level start: the cutscene is on, the timer waits (bed animation %d, BeganDay %d, can move %d/%d)", g.bed, g.began, g.able, g.allow);
         if (S.autoSpeed) gTasSpeedReq.store(2);
         return;
     }
@@ -714,31 +768,35 @@ void introTick(double now) {
         }
     }
     if (S.skipBed && !gIntroFf && now >= gFfUntil && el < 2.0) {
-        // the cutscene at 10x. The cap is short on purpose: if the end of the cutscene were ever missed, the game must not
-        // stay fast for long.
+        // the cutscene at 10x (the physics step grows with it, see fixedStepTick). The cap is short on purpose: if the end of
+        // the cutscene were ever missed, the game must not stay fast for long.
         gFfUntil = now + 5.0;
         gFfSpeed = 10.f;
         gIntroFf = true;
         logf("tas: level start: skipping the cutscene (x10)");
     }
     Sig g = readSignals();
-    bool changed = g.began != pBegan || g.able != pAble || g.allow != pAllow;
+    bool changed = g.began != pBegan || g.able != pAble || g.allow != pAllow || g.bed != pBed;
     bool textRise = false;
     for (int i = 0; i < 7; i++) {
         if (g.text[i] != pText[i]) changed = true;
         if (g.text[i] && !pText[i]) textRise = true;
     }
-    if (changed && gIntroLogs++ < 30)
-        logf("tas: level start +%.1fs: day text %d, BeganDay %d, can move %d/%d", el, g.anyText, g.began, g.able, g.allow);
+    if (changed && gIntroLogs++ < 40)
+        logf("tas: level start +%.1fs: day picture %d (alpha %.2f), bed animation %d, BeganDay %d, can move %d/%d", el, g.anyText, g.alpha, g.bed, g.began, g.able, g.allow);
+    if (g.bed) gSawBed = true;
+    if (pBed && !g.bed && gSawBed && gBedEndAt < 0.0) gBedEndAt = now;  // the bed animation just ended
     bool beganRise = g.began && !pBegan;
     bool moveRise = ((g.able && !pAble) || (g.allow && !pAllow)) && el > 1.5;
     memcpy(pText, g.text, sizeof(pText));
     pBegan = g.began;
     pAble = g.able;
     pAllow = g.allow;
-    if (textRise) endIntro(now, "the day text showed up");
+    pBed = g.bed;
+    if (textRise) endIntro(now, "the day picture showed up");
     else if (beganRise) endIntro(now, "BeganDay turned on");
     else if (moveRise) endIntro(now, "the player can move");
+    else if (gBedEndAt >= 0.0 && now - gBedEndAt > 2.5) endIntro(now, "the bed animation ended");  // the picture normally comes first
     else if (el > 30.0) endIntro(now, "no sign of the end of the cutscene");
 }
 

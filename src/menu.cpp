@@ -1094,6 +1094,8 @@ void pageUi() {
     section("BEHAVIOUR");
     toggle("Rounded corners", ui.rounded, [](bool v) { ui.rounded = v; });
     toggle("Lock icon and menu position", ui.lock, [](bool v) { ui.lock = v; });
+    toggle("Close the menu when playing starts", ui.closeOnPlay, [](bool v) { ui.closeOnPlay = v; });
+    caption("A menu left open in the main menu does not stay over the game: it closes when the level starts. The eye opens it again.", 2);
     toggle("Hide the eye while playing", ui.hideInGame, [](bool v) { ui.hideInGame = v; });
     caption("The eye is gone while you play. It is back in the main menu and when the game is paused.", 2);
     button("Reset menu look", [] { resetLook(); });
@@ -1586,6 +1588,16 @@ void menuFrame(int w, int h) {
         gToastUntil = gTime + 3.f;
     }
     if (gMode != ModeSlider) gScaleDraft = ui.scale;
+
+    {   // the menu does not stay open over the game: it closes the moment playing starts (main menu or pause -> playing)
+        static int prevState = 0;
+        int gs = gGameState.load();
+        if (ui.closeOnPlay && gs == 1 && prevState != 1 && ui.open) {
+            ui.open = false;
+            gMode = ModeNone;
+        }
+        prevState = gs;
+    }
 
     layout();
     handleFinger(h);

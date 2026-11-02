@@ -224,6 +224,7 @@ struct UiSettings {
     bool showFps = false;
     bool showGraph = false;
     bool lock = false;
+    bool closeOnPlay = true;   // the menu closes by itself when a level starts (or the game is resumed); the eye opens it again
     bool hideInGame = false;   // the eye and the menu are hidden while playing (not in the main menu, not when paused)
     bool rainbow = false;
     bool rounded = true;

@@ -214,6 +214,7 @@ void fields(UiSettings& ui, FxSettings& fx, std::vector<Field>& out) {
     FB("rounded", ui.rounded);
     FB("lock", ui.lock);
     FB("hideInGame", ui.hideInGame);
+    FB("closeOnPlay", ui.closeOnPlay);
     out.push_back({"accent", kHex, ui.accent, 0.f, 0.f});
     out.push_back({"bg", kHex, ui.bg, 0.f, 0.f});
     FB("open", ui.open);
