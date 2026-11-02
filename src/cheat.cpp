@@ -11,6 +11,7 @@
 
 #include "il2cpp.h"
 #include "log.h"
+#include "tas.h"
 
 // The Cheat tab, game side.
 //
@@ -352,6 +353,7 @@ void psHook(void* self, void* mi) {
         if (I == 7 || I == 8) forgetPlayer(1);
         return;
     }
+    if (I == 6 || I == 8) tas::onBedCaught();  // being caught in bed: the TAS tab's "skip the bed cutscene" starts here
     gOrigPs[I](self, mi);
 }
 
@@ -818,6 +820,53 @@ void autoGrab(Il2CppObject* pr, int64_t now) {
     invoke(mClick, pr, nullptr);
 }
 
+// ---------------------------------------------------------------- diagnostic: which number of the weapon script changes?
+// While infinite ammo is on, the numbers and flags of PickRay are watched and every change is written to the log
+// ("cheat: PickRay.X 3 -> 2"). A counter that goes down when you shoot shows up there, whichever weapon it belongs to.
+struct Watch {
+    size_t off = 0;
+    int type = 0;
+    char name[40] = {0};
+    double prev = 0;
+    bool init = false;
+    int changes = 0;
+};
+std::vector<Watch> gWatch;
+bool gWatchBuilt = false;
+int gWatchLogs = 0;
+
+void buildWatch() {
+    gWatchBuilt = true;
+    if (!cPick || !A.class_get_fields || !A.field_get_name || !A.field_get_flags || !A.field_get_type || !A.type_get_type) return;
+    void* it = nullptr;
+    while (FieldInfo* f = A.class_get_fields(cPick, &it)) {
+        if (A.field_get_flags(f) & 0x10) continue;  // static
+        int t = A.type_get_type(A.field_get_type(f));
+        if (t != kTypeBool && t != kTypeI4 && t != kTypeR4) continue;
+        Watch w;
+        w.off = A.field_get_offset(f);
+        w.type = t;
+        snprintf(w.name, sizeof(w.name), "%s", A.field_get_name(f));
+        if (w.off) gWatch.push_back(w);
+    }
+    logf("cheat: watching %d numbers of PickRay while infinite ammo is on", (int)gWatch.size());
+}
+
+void watchTick(Il2CppObject* pr) {
+    if (!gC.infAmmo || !pr) return;
+    if (!gWatchBuilt) buildWatch();
+    for (Watch& w : gWatch) {
+        double v = w.type == kTypeBool ? (*P<bool>(pr, w.off) ? 1.0 : 0.0) : (w.type == kTypeI4 ? (double)*P<int>(pr, w.off) : (double)*P<float>(pr, w.off));
+        if (w.init && v != w.prev && w.changes < 4 && gWatchLogs < 90) {
+            w.changes++;
+            gWatchLogs++;
+            logf("cheat: PickRay.%s %g -> %g%s", w.name, w.prev, v, w.changes == 4 ? " (changes often: not shown again)" : "");
+        }
+        w.prev = v;
+        w.init = true;
+    }
+}
+
 // Infinite ammo and spray: the amount goes back to the highest value seen, and the gun is never "empty" (a crossbow holds
 // so few darts that the empty flag goes up the moment the last one is shot, and putting the number back is not enough).
 int gAmmoLogged = 0;
@@ -865,6 +914,7 @@ void playerTick(Il2CppObject* fps) {
         logf("cheat: player found");
     }
     gFpsAt = now;
+    gPlayerSeenMs.store(now);
     gPlayerCc = ref(fps, O.fpsCc);
     Il2CppObject* ps = ref(fps, O.fpsPs);
     gPs = ps;
@@ -901,6 +951,7 @@ void playerTick(Il2CppObject* fps) {
     if (!gPr) return;
 
     supplies(gPr);
+    watchTick(gPr);
 
     float reach = gC.reach < 2.f ? 2.f : (gC.reach > 40.f ? 40.f : gC.reach);
     reachApply(gPr, O.prReach, gC.longReachOn, reach);

@@ -22,6 +22,7 @@ static SplitsView gSplits;
 
 std::atomic<bool> gBlockTouch{false};
 std::atomic<int> gGameState{0};
+std::atomic<int> gTasSpeedReq{0};
 std::atomic<int64_t> gPlayerSeenMs{0};
 static std::atomic<float> gMeasuredFps{0.f};
 void setMeasuredFps(float fps) { gMeasuredFps.store(fps); }
@@ -329,6 +330,7 @@ void fields(UiSettings& ui, FxSettings& fx, std::vector<Field>& out) {
         TasSettings& t = fx.tas;
         FB("tasSpeedOn", t.speedOn);       FF("tasSpeed", t.speed, 0.01f, 5.f);
         FB("tasAudio", t.audioSync);
+        FB("tasAutoSpeed", t.autoSpeed);
         FB("tasSplits", t.splitsShow);
         FB("tasAuto", t.autoList);
         FB("tasEscape", t.escapeSplit);

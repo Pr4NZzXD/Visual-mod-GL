@@ -51,6 +51,9 @@ bool load(void* handle) {
     NEED(gchandle_new, "il2cpp_gchandle_new");
     NEED(array_length, "il2cpp_array_length");
     sym(handle, "il2cpp_field_get_type", reinterpret_cast<void**>(&A.field_get_type), true);
+    sym(handle, "il2cpp_class_get_fields", reinterpret_cast<void**>(&A.class_get_fields), true);
+    sym(handle, "il2cpp_field_get_name", reinterpret_cast<void**>(&A.field_get_name), true);
+    sym(handle, "il2cpp_field_get_flags", reinterpret_cast<void**>(&A.field_get_flags), true);
     sym(handle, "il2cpp_gc_wbarrier_set_field", reinterpret_cast<void**>(&A.gc_wbarrier_set_field), true);
     sym(handle, "il2cpp_class_get_name", reinterpret_cast<void**>(&A.class_get_name), true);
     sym(handle, "il2cpp_class_get_parent", reinterpret_cast<void**>(&A.class_get_parent), true);

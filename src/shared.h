@@ -96,6 +96,7 @@ struct TasSettings {
     // ---- time
     bool speedOn = false;     float speed = 1.f;        // time scale, 0.01 .. 5
     bool audioSync = true;                              // every sound follows the time scale
+    bool autoSpeed = false;                             // off when a level starts, on when "Day N" shows after the bed cutscene
     // ---- item splits
     bool splitsShow = false;
     bool autoList = true;                               // an item that is picked up for the first time is added to the list
@@ -107,7 +108,7 @@ struct TasSettings {
     int restartReq = 0;
     bool restartBtn = false;                            // a small restart button on the screen
     float restartBtnSize = 1.f;                         // 0.6 .. 2
-    bool skipBed = false;                               // the cutscene when Granny or Grandpa catches you in bed
+    bool skipBed = false;                               // the cutscene at the start of a level (you wake up in bed) and the one when Granny or Grandpa catches you in bed
     bool skipEnding = false;                            // the cutscene after an escape
     // ---- crosshair
     bool crosshairOn = false;
@@ -280,6 +281,8 @@ extern std::atomic<bool> gBlockTouch;
 // What the game is doing now: 0 menu or loading (no player), 1 playing, 2 paused (a player, time scale 0).
 // gPlayerSeenMs is the last time the player's update ran (steady clock, milliseconds).
 extern std::atomic<int> gGameState;
+// The game side asks the menu to switch the speedhack: 1 = on, 2 = off (the menu owns the settings, so it does it).
+extern std::atomic<int> gTasSpeedReq;
 extern std::atomic<int64_t> gPlayerSeenMs;
 
 // settings file

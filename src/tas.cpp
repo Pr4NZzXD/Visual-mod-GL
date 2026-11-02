@@ -40,6 +40,8 @@ struct U {
     float (*apGet)(void*) = nullptr;
     void (*apSet)(void*, float) = nullptr;
     const MethodInfo *mApGet = nullptr, *mApSet = nullptr;
+    Il2CppObject* (*getGo)(void*) = nullptr;   // Component.gameObject
+    bool (*activeInH)(void*) = nullptr;        // GameObject.activeInHierarchy
     const MethodInfo *mActiveScene = nullptr, *mBuildIdx = nullptr, *mNameOf = nullptr, *mLoadInt = nullptr, *mLoadStr = nullptr;
 } u;
 
@@ -48,6 +50,8 @@ void resolveUnity() {
     u.tried = true;
     u.tsGet = reinterpret_cast<float (*)()>(icall("UnityEngine.Time::get_timeScale"));
     u.tsSet = reinterpret_cast<void (*)(float)>(icall("UnityEngine.Time::set_timeScale"));
+    u.getGo = reinterpret_cast<Il2CppObject* (*)(void*)>(icall("UnityEngine.Component::get_gameObject"));
+    u.activeInH = reinterpret_cast<bool (*)(void*)>(icall("UnityEngine.GameObject::get_activeInHierarchy"));
     u.cAudio = findClass("UnityEngine", "AudioSource");
     u.apGet = reinterpret_cast<float (*)(void*)>(icall("UnityEngine.AudioSource::get_pitch"));
     u.apSet = reinterpret_cast<void (*)(void*, float)>(icall("UnityEngine.AudioSource::set_pitch"));
@@ -291,6 +295,7 @@ double gTimerAccum = 0.0;   // seconds of play: counts only while the game is pl
 bool gTimerStopped = false; // the run is over (escaped)
 double gLastClock = 0.0;
 bool gPlaying = false;
+bool gIntroWait = false;  // the cutscene at the start of a level is on: the timer is held (see "the start of a level")
 std::vector<std::string> gPicks;              // names the hook saw, handled in tick
 int gEscapeEvents = 0;
 std::string gEscapeName;
@@ -526,11 +531,215 @@ void publishSplits(double now, bool force) {
         r.seconds = gEscapeT;
         v.rows.push_back(r);
     }
-    v.running = !gTimerStopped && gPlaying;
+    v.running = !gTimerStopped && gPlaying && !gIntroWait;
     v.timer = gTimerAccum;
     v.items = gItems;
     for (const std::string& n : gItems) v.itemOn.push_back(isOn(n) ? 1 : 0);
     setSplitsView(v);
+}
+
+// ---------------------------------------------------------------- the start of a level
+// A level starts with a cutscene (you wake up in bed), then the text "Day N" shows up and you can play. The run should
+// begin there, not before it. Until then: the timer is held at 0, the cutscene can be played fast (Skip the bed
+// cutscene), and the speedhack can be left off (Auto). Everything is read from the game's own objects: the Days object
+// (the day texts, BeganDay) and the player (may it move?). Every change of those is written to the log, so a game
+// that behaves differently can be seen there.
+struct Intro {
+    bool resolved = false;
+    Il2CppClass *cDays = nullptr, *cFps = nullptr, *cGo = nullptr;
+    size_t began = 0, able = 0, allow = 0;
+    size_t text[7] = {0, 0, 0, 0, 0, 0, 0};
+    int texts = 0;
+} IN;
+
+bool gPlayerHere = false;       // the player's update ran in the last moments
+bool gIntroWatch = false;       // a new scene: start looking once the player is there
+double gIntroSceneAt = 0.0, gIntroStart = -1.0, gIntroFind = 0.0;
+bool gIntroFf = false;          // the fast-forward in progress is the intro's
+Il2CppObject *gDays = nullptr, *gFpsObj = nullptr;
+uint32_t gDaysH = 0, gFpsH = 0;
+bool pText[7] = {}, pBegan = false, pAble = false, pAllow = false;
+int gIntroLogs = 0;
+int gIntroScene = -999999;
+
+void resolveIntro() {
+    if (IN.resolved) return;
+    IN.resolved = true;
+    IN.cDays = findClass("", "Days");
+    IN.cFps = findClass("", "MobileFPS");
+    IN.cGo = findClass("UnityEngine", "GameObject");
+    if (IN.cDays) {
+        IN.began = fieldChecked(IN.cDays, "Days", "BeganDay", kTypeBool);
+        static const char* const kText[7] = {"Text_Day1", "Text_Day2", "Text_Day3", "Text_Day4", "Text_Day5", "Text_Day5Final", "Text_Day6"};
+        for (int i = 0; i < 7; i++) {
+            IN.text[i] = fieldChecked(IN.cDays, "Days", kText[i], kTypeRef);
+            if (IN.text[i]) IN.texts++;
+        }
+    }
+    if (IN.cFps) {
+        IN.able = fieldChecked(IN.cFps, "MobileFPS", "AbleToMove", kTypeBool);
+        IN.allow = fieldChecked(IN.cFps, "MobileFPS", "isAllowedToMove", kTypeBool);
+    }
+    logf("tas: level start: Days %s, %d day texts, BeganDay %s, movement flags %s", IN.cDays ? "found" : "MISSING", IN.texts,
+         IN.began ? "ok" : "no", (IN.able || IN.allow) ? "ok" : "no");
+}
+
+void dropIntroObjects() {
+    if (gDaysH) release(gDaysH);
+    if (gFpsH) release(gFpsH);
+    gDays = gFpsObj = nullptr;
+    gDaysH = gFpsH = 0;
+}
+
+bool uiShown(Il2CppObject* o) {
+    if (!o || !alive(o) || !u.activeInH) return false;
+    Il2CppObject* go = (classOf(o) == IN.cGo) ? o : (u.getGo ? u.getGo(o) : nullptr);
+    return go && u.activeInH(go);
+}
+
+bool findIntroObjects() {
+    if (!gDays || !alive(gDays)) {
+        if (gDaysH) release(gDaysH);
+        gDays = nullptr;
+        gDaysH = 0;
+        Il2CppObject* a = IN.cDays ? findObjectsOfType(IN.cDays) : nullptr;
+        if (a && A.array_length(a) > 0 && arrayData(a)[0] && alive(arrayData(a)[0])) {
+            gDays = arrayData(a)[0];
+            gDaysH = retain(gDays);
+        }
+    }
+    if (!gFpsObj || !alive(gFpsObj)) {
+        if (gFpsH) release(gFpsH);
+        gFpsObj = nullptr;
+        gFpsH = 0;
+        Il2CppObject* a = IN.cFps ? findObjectsOfType(IN.cFps) : nullptr;
+        if (a && A.array_length(a) > 0 && arrayData(a)[0] && alive(arrayData(a)[0])) {
+            gFpsObj = arrayData(a)[0];
+            gFpsH = retain(gFpsObj);
+        }
+    }
+    return gDays != nullptr;
+}
+
+struct Sig {
+    bool text[7];
+    bool began, able, allow;
+    bool anyText;
+};
+Sig readSignals() {
+    Sig g = {};
+    for (int i = 0; i < 7; i++) {
+        g.text[i] = IN.text[i] && gDays && uiShown(*fieldPtr<Il2CppObject*>(gDays, IN.text[i]));
+        g.anyText = g.anyText || g.text[i];
+    }
+    g.began = IN.began && gDays && *fieldPtr<bool>(gDays, IN.began);
+    g.able = IN.able && gFpsObj && *fieldPtr<bool>(gFpsObj, IN.able);
+    g.allow = IN.allow && gFpsObj && *fieldPtr<bool>(gFpsObj, IN.allow);
+    return g;
+}
+
+void endIntro(double now, const char* why) {
+    if (!gIntroWait) return;
+    gIntroWait = false;
+    gTimerAccum = 0.0;  // the run starts here
+    if (gIntroFf) {
+        gFfUntil = 0.0;
+        gIntroFf = false;
+    }
+    if (S.autoSpeed) gTasSpeedReq.store(1);
+    logf("tas: level start: %s after %.1f s: the timer starts now%s", why, now - gIntroStart, S.autoSpeed ? ", speedhack on (Auto)" : "");
+    dropIntroObjects();
+}
+
+// called for every new scene
+void introNewScene(double now) {
+    if (gIntroWait && gIntroFf) gFfUntil = 0.0;
+    gIntroWait = false;
+    gIntroFf = false;
+    gIntroWatch = true;
+    gIntroSceneAt = now;
+    gIntroStart = -1.0;
+    gIntroFind = 0.0;
+    gIntroLogs = 0;
+    dropIntroObjects();
+}
+
+void introTick(double now) {
+    resolveIntro();
+    if (!IN.cDays || !IN.texts) return;  // the game has no such intro: the timer works as before
+
+    if (gIntroWatch) {
+        if (!gPlayerHere) {
+            if (now - gIntroSceneAt > 90.0) gIntroWatch = false;  // a menu: no level to wait for
+            return;
+        }
+        // the player's update has started: the cutscene is running (the timer would be counting from here)
+        if (gIntroStart < 0.0) gIntroStart = now;
+        if (now >= gIntroFind) {
+            gIntroFind = now + 0.25;
+            findIntroObjects();
+        }
+        if (!gDays) {
+            if (now - gIntroStart > 3.0) {
+                gIntroWatch = false;
+                logf("tas: level start: no Days object in this scene, the timer runs from the start");
+            }
+            return;
+        }
+        Sig g = readSignals();
+        gIntroWatch = false;
+        if (g.anyText) {  // the day text is already up: nothing to wait for
+            logf("tas: level start: the day text is already showing, the timer runs from the start");
+            dropIntroObjects();
+            return;
+        }
+        gIntroWait = true;
+        gTimerAccum = 0.0;
+        memcpy(pText, g.text, sizeof(pText));
+        pBegan = g.began;
+        pAble = g.able;
+        pAllow = g.allow;
+        logf("tas: level start: the cutscene is on, the timer waits (BeganDay %d, can move %d/%d)", g.began, g.able, g.allow);
+        if (S.autoSpeed) gTasSpeedReq.store(2);
+        return;
+    }
+
+    if (!gIntroWait) return;
+    double el = now - gIntroStart;
+    if (!gDays || !alive(gDays)) {
+        findIntroObjects();
+        if (!gDays) {
+            endIntro(now, "the Days object is gone");
+            return;
+        }
+    }
+    if (S.skipBed && !gIntroFf && now >= gFfUntil && el < 2.0) {
+        // the cutscene at 10x. The cap is short on purpose: if the end of the cutscene were ever missed, the game must not
+        // stay fast for long.
+        gFfUntil = now + 5.0;
+        gFfSpeed = 10.f;
+        gIntroFf = true;
+        logf("tas: level start: skipping the cutscene (x10)");
+    }
+    Sig g = readSignals();
+    bool changed = g.began != pBegan || g.able != pAble || g.allow != pAllow;
+    bool textRise = false;
+    for (int i = 0; i < 7; i++) {
+        if (g.text[i] != pText[i]) changed = true;
+        if (g.text[i] && !pText[i]) textRise = true;
+    }
+    if (changed && gIntroLogs++ < 30)
+        logf("tas: level start +%.1fs: day text %d, BeganDay %d, can move %d/%d", el, g.anyText, g.began, g.able, g.allow);
+    bool beganRise = g.began && !pBegan;
+    bool moveRise = ((g.able && !pAble) || (g.allow && !pAllow)) && el > 1.5;
+    memcpy(pText, g.text, sizeof(pText));
+    pBegan = g.began;
+    pAble = g.able;
+    pAllow = g.allow;
+    if (textRise) endIntro(now, "the day text showed up");
+    else if (beganRise) endIntro(now, "BeganDay turned on");
+    else if (moveRise) endIntro(now, "the player can move");
+    else if (el > 30.0) endIntro(now, "no sign of the end of the cutscene");
 }
 
 // ---------------------------------------------------------------- is the game being played?
@@ -542,12 +751,13 @@ void gameStateTick(double now) {
     bool haveSignal = seen != 0;
     bool player = haveSignal ? (abs - seen < 700) : true;  // without the signal everything is shown, as before
     float ts = u.tsGet ? u.tsGet() : 1.f;
+    gPlayerHere = haveSignal && player;
     bool paused = player && ts < 0.0001f;
     gPlaying = player && !paused;
     gGameState.store(!player ? 0 : (paused ? 2 : 1));
     double dt = now - gLastClock;
     gLastClock = now;
-    if (gPlaying && !gTimerStopped && dt > 0.0) gTimerAccum += dt > 0.25 ? 0.25 : dt;  // a long gap (the app in the background) is not play time
+    if (gPlaying && !gTimerStopped && !gIntroWait && dt > 0.0) gTimerAccum += dt > 0.25 ? 0.25 : dt;  // a long gap (the app in the background) is not play time
 }
 
 // ---------------------------------------------------------------- hooks
@@ -717,6 +927,11 @@ void tick(const TasSettings& s) {
         }
     }
 
+    if (gScene != gIntroScene) {
+        gIntroScene = gScene;
+        introNewScene(now);
+    }
+
     if (s.restartReq != lastRestart) {
         lastRestart = s.restartReq;
         restartScene();
@@ -736,6 +951,7 @@ void tick(const TasSettings& s) {
         gRouteDirty = true;
     }
     gameStateTick(now);
+    introTick(now);
     handleFilterChanges();
     discoverItems(now);
     syncRoute();
@@ -755,6 +971,7 @@ void tick(const TasSettings& s) {
             snprintf(buf, sizeof(buf), "\nTime scale now %.2f", u.tsGet ? u.tsGet() : 0.f);
             t += buf;
         }
+        if (gIntroWait) t += "\nThe level is starting: the timer begins when the day text shows.";
         if (now < gFfUntil) t += "\nFast-forwarding a cutscene...";
         setTasStatus(t);
     }

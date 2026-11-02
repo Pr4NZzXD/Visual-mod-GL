@@ -35,6 +35,9 @@ struct Api {
     FieldInfo* (*class_get_field_from_name)(Il2CppClass*, const char*);
     size_t (*field_get_offset)(FieldInfo*);
     const Il2CppType* (*field_get_type)(FieldInfo*);  // optional: used to check a field before it is written
+    FieldInfo* (*class_get_fields)(Il2CppClass*, void** iter);  // optional: for the diagnostic watch of a class
+    const char* (*field_get_name)(FieldInfo*);
+    int (*field_get_flags)(FieldInfo*);
     Il2CppObject* (*runtime_invoke)(const MethodInfo*, void*, void**, Il2CppException**);
     Il2CppObject* (*object_new)(Il2CppClass*);
     void* (*object_unbox)(Il2CppObject*);

@@ -998,6 +998,8 @@ void pageTas() {
             caption("Presets");
             segments(kSpeedNames1, sel1, [](int i) { fx.tas.speed = kSpeedVals1[i]; fx.tas.speedOn = true; }, 0.9f);
             segments(kSpeedNames2, sel2, [](int i) { fx.tas.speed = kSpeedVals2[i]; fx.tas.speedOn = true; }, 0.9f);
+            toggle("Auto", t.autoSpeed, [](bool v) { fx.tas.autoSpeed = v; });
+            caption("The speedhack switches itself off when a level starts and on again when the text Day 1 shows up after the bed cutscene. The item timer starts there too.", 3);
             section("AUDIO");
             toggle("Audio sync", t.audioSync, [](bool v) { fx.tas.audioSync = v; });
             caption("Sounds get higher or lower with the speed, so audio and picture stay together. The pitch stops at 0.05x and 3x.", 2);
@@ -1038,7 +1040,7 @@ void pageTas() {
             section("CUTSCENES");
             toggle("Skip the bed cutscene", t.skipBed, [](bool v) { fx.tas.skipBed = v; });
             toggle("Skip the ending cutscene", t.skipEnding, [](bool v) { fx.tas.skipEnding = v; });
-            caption("The cutscene is not cut out: it plays at 8x (bed) and 10x (ending), then the game goes on as usual. If it does not work, open Menu settings > Show last log lines: the lines that start with tas: say what happened.", 3);
+            caption("Bed: the wake-up cutscene at the start of a level and the one when you are caught in bed. The cutscene is not cut out: it plays at 10x until the text Day 1 shows, then the game goes on as usual. The ending plays at 10x. If it does not work, open Menu settings > Show last log lines: the lines that start with tas: say what happened.", 3);
             break;
         }
         default: {  // ---- crosshair
@@ -1602,6 +1604,12 @@ void menuFrame(int w, int h) {
     ImGui::Render();
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
+    // the game side (tas.cpp) asks for the speedhack to be switched, e.g. by the Auto option when "Day 1" shows
+    {
+        int rq = gTasSpeedReq.exchange(0);
+        if (rq == 1 && !fx.tas.speedOn) { fx.tas.speedOn = true; gDirty = true; }
+        else if (rq == 2 && fx.tas.speedOn) { fx.tas.speedOn = false; gDirty = true; }
+    }
     if (gDirty) {
         gDirty = false;
         publishFx(fx);
