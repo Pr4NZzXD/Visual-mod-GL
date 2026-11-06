@@ -24,6 +24,7 @@ std::atomic<bool> gBlockTouch{false};
 std::atomic<int> gGameState{0};
 std::atomic<int> gTasSpeedReq{0};
 std::atomic<int64_t> gPlayerSeenMs{0};
+std::atomic<bool> gPlayerHook{false};
 static std::atomic<float> gMeasuredFps{0.f};
 void setMeasuredFps(float fps) { gMeasuredFps.store(fps); }
 float measuredFps() { return gMeasuredFps.load(); }
@@ -305,6 +306,7 @@ void fields(UiSettings& ui, FxSettings& fx, std::vector<Field>& out) {
     {
         CheatSettings& c = fx.cheat;
         FB("chGod", c.godMode);
+        FF("chRespawn", c.respawnSec, 0.f, 60.f);
         FB("chSpeedOn", c.speedOn);        FF("chSpeed", c.speed, 1.f, 6.f);
         FB("chNoclip", c.noclip);
         FB("chNoFall", c.noFallDamage);

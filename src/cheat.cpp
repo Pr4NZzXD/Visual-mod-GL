@@ -88,6 +88,7 @@ struct Off {
 } O;
 
 Il2CppClass *cFps, *cPs, *cPick, *cFall, *cItemSpawn, *cSeed, *cDoor, *cRayTraps, *cCollider, *cRigidbody, *cGo, *cTransform;
+const MethodInfo *mGetName, *mAnimPlay, *mAudioStop, *mWarp;
 const MethodInfo *mClick, *mInstantiate, *mGetComp, *mGetCompsInChildren, *mSetParent, *mSetActive, *mIsChildOf;
 
 // the names of the fields of ItemSpawn, in the same order as kItemNames
@@ -124,7 +125,7 @@ const EnemySpec kSpec[kEnemyCount] = {
 };
 struct EnemyOff {
     size_t agent = 0, blind = 0, det1 = 0, det2 = 0, follow = 0, noise = 0, timer = 0, tag = 0, dying = 0, health = 0;
-    size_t jump = 0, caught = 0, target = 0;  // god mode: the attack distance, the "caught you" flag, the spider's target flag
+    size_t jump = 0, caught = 0, target = 0, anim = 0, clipDead = 0, clipIdle = 0, voice = 0;  // god mode: the attack distance, the "caught you" flag, the spider's target flag
 };
 Il2CppClass* gEnemyCls[kEnemyCount] = {};
 EnemyOff gEO[kEnemyCount];
@@ -143,6 +144,11 @@ struct EnemyState {
     float origJump = 0;
     float origDet1 = 0, origDet2 = 0;
     bool dead = false;
+    int64_t deadAt = 0;        // when Granny / Grandpa were killed (they come back later)
+    bool hidden = false;       // no death pose was possible: the dead one is switched off instead
+    bool godHold = false;      // god mode holds this one still because it is close to the player
+    float home[3] = {0, 0, 0}; // where it was first seen: it comes back there
+    bool haveHome = false;
 };
 std::unordered_map<Il2CppObject*, EnemyState> gSt[kEnemyCount];
 Il2CppObject* gSeen[kEnemyCount] = {};
@@ -283,6 +289,10 @@ void resolve() {
         FieldInfo* f = cPick ? A.class_get_field_from_name(cPick, nm) : nullptr;
         if (f && A.field_get_type && A.type_get_type) logf("cheat: PickRay.%s has type %#x", nm, A.type_get_type(A.field_get_type(f)));
     }
+    mGetName = findMethod(findClass("UnityEngine", "Object"), "get_name", 0);
+    mAnimPlay = findMethod(findClass("UnityEngine", "Animation"), "Play", 1, "System.String");
+    mAudioStop = findMethod(findClass("UnityEngine", "AudioSource"), "Stop", 0);
+    mWarp = findMethod(findClass("UnityEngine.AI", "NavMeshAgent"), "Warp", 1);
     mClick = findMethod(cPick, "HandleButtonClick", 0);
     mInstantiate = findExact(findClass("UnityEngine", "Object"), "Instantiate",
                              {"UnityEngine.Object", "UnityEngine.Vector3", "UnityEngine.Quaternion"});
@@ -313,6 +323,10 @@ void resolve() {
             e.jump = fieldChecked(c, sp.cls, "DistanceJumpscare", kTypeR4);
             e.caught = fieldChecked(c, sp.cls, "CaughtPlayer", kTypeBool);
             e.dying = fieldChecked(c, sp.cls, "IsDying", kTypeBool);
+            e.anim = fieldChecked(c, sp.cls, "Anim", kTypeRef);
+            e.clipDead = fieldChecked(c, sp.cls, "Tranquilized", kTypeRef);
+            e.clipIdle = fieldChecked(c, sp.cls, "Idle", kTypeRef);
+            e.voice = fieldChecked(c, sp.cls, "GrannyVoiceSource", kTypeRef);
             gStopAI[k] = findMethod(c, "StopAI", 0);
             gDeadDisable[k] = findMethod(c, "DeadDisable", 0);
             gResetDecision[k] = findMethod(c, "ResetAIDecision", 0);
@@ -488,15 +502,60 @@ void releaseFreeze(int k, Il2CppObject* o, EnemyState& s) {
     if (gEO[k].agent) stopAgent(ref(o, gEO[k].agent), false);
 }
 
+bool posOf(Il2CppObject* comp, float* out) {
+    if (!comp || !ic.getTransform || !ic.getPos) return false;
+    Il2CppObject* tr = ic.getTransform(comp);
+    if (!tr) return false;
+    ic.getPos(tr, out);
+    return true;
+}
+
+// plays one of the animation clips of the enemy by the clip's own name
+bool playClip(Il2CppObject* enemy, size_t animOff, size_t clipOff) {
+    if (!animOff || !clipOff || !mGetName || !mAnimPlay) return false;
+    Il2CppObject* anim = ref(enemy, animOff);
+    Il2CppObject* clip = ref(enemy, clipOff);
+    if (!valid(anim) || !clip) return false;
+    Il2CppObject* name = invoke(mGetName, clip, nullptr);
+    if (!name) return false;
+    void* a[1] = {name};
+    return callBool(mAnimPlay, anim, a, false);
+}
+
+void quietEnemy(Il2CppObject* o, const EnemyOff& e) {  // no voice from a dead enemy
+    if (!mAudioStop || !e.voice) return;
+    Il2CppObject* v = ref(o, e.voice);
+    if (valid(v)) invoke(mAudioStop, v, nullptr);
+}
+
+void setGoActive(Il2CppObject* comp, bool on) {
+    if (!mSetActive || !ic.getGameObject) return;
+    Il2CppObject* go = ic.getGameObject(comp);
+    if (!go) return;
+    void* a[1] = {&on};
+    invoke(mSetActive, go, a);
+}
+
 void killEnemy(int k, Il2CppObject* o, EnemyState& s) {
     bool ok = true;
     bool permanent = true;
+    char tail[40] = "";
     if (k < 2) {
-        if (gEO[k].dying) *P<bool>(o, gEO[k].dying) = true;
-        if (gStopAI[k]) invoke(gStopAI[k], o, nullptr);
-        if (gDeadDisable[k]) invoke(gDeadDisable[k], o, nullptr);
-        if (gEO[k].agent) stopAgent(ref(o, gEO[k].agent), true);
-        if (ic.setBehEnabled) ic.setBehEnabled(o, false);  // its update stops for good
+        // Granny and Grandpa: the game only kills them in the sauna, and that cannot be undone. Here they just go down: their
+        // own update stops (see enemyPre), the agent stops, they lie down like after a dart, and after the respawn time they
+        // get up again where they started. Nothing of the game's own death code is used, so nothing has to be repaired.
+        const EnemyOff& e = gEO[k];
+        if (e.caught) *P<bool>(o, e.caught) = false;
+        if (e.agent) stopAgent(ref(o, e.agent), true);
+        quietEnemy(o, e);
+        bool pose = playClip(o, e.anim, e.clipDead);
+        if (!pose) {  // no pose to show: it disappears instead (and is switched on again at the respawn)
+            setGoActive(o, false);
+            s.hidden = true;
+        }
+        s.dead = true;
+        s.deadAt = nowMs();
+        if (gC.respawnSec > 0.5f) snprintf(tail, sizeof(tail), ", back in %.0f s", gC.respawnSec);
     } else if (k == 3) {
         if (!gEO[k].health) ok = false;
         else *P<float>(o, gEO[k].health) = 0.f;
@@ -506,16 +565,74 @@ void killEnemy(int k, Il2CppObject* o, EnemyState& s) {
         else invoke(gKillM[k], o, nullptr);
         permanent = (k != 2 && k != 6);  // a stunned Mom Spider and a knocked out Little One get up again
     }
-    char msg[64];
+    char msg[80];
     if (!ok) {
         snprintf(msg, sizeof(msg), "%s: %s is not available", kEnemyNames[k], kEnemyKill[k]);
     } else {
-        snprintf(msg, sizeof(msg), "%s: %s", kEnemyNames[k], k == 2 ? "stunned" : (k == 6 ? "knocked out" : "killed"));
+        snprintf(msg, sizeof(msg), "%s: %s%s", kEnemyNames[k], k == 2 ? "stunned" : (k == 6 ? "knocked out" : "killed"), tail);
         if (permanent) s.dead = true;
         releaseFreeze(k, o, s);
     }
     logf("cheat: %s", msg);
     postToast(msg);
+}
+
+// Granny / Grandpa get up: where they started, the way they were before (called from tick: a hidden one has no update to do it in)
+void respawnEnemy(int k, Il2CppObject* o, EnemyState& s) {
+    const EnemyOff& e = gEO[k];
+    if (s.hidden) {
+        setGoActive(o, true);
+        s.hidden = false;
+    }
+    Il2CppObject* agent = e.agent ? ref(o, e.agent) : nullptr;
+    if (s.haveHome) {
+        bool done = false;
+        if (valid(agent) && mWarp) {
+            float home[3] = {s.home[0], s.home[1], s.home[2]};
+            void* a[1] = {home};
+            bool ok = true;
+            invoke(mWarp, agent, a, &ok);
+            done = ok;
+        }
+        if (!done && ic.getTransform && ic.setPos) {
+            Il2CppObject* tr = ic.getTransform(o);
+            if (tr) ic.setPos(tr, s.home);
+        }
+    }
+    if (valid(agent)) stopAgent(agent, false);
+    if (e.caught) *P<bool>(o, e.caught) = false;
+    if (e.dying) *P<bool>(o, e.dying) = false;
+    playClip(o, e.anim, e.clipIdle);
+    if (gResetDecision[k]) invoke(gResetDecision[k], o, nullptr);
+    s.dead = false;
+    s.godHold = false;
+    char msg[48];
+    snprintf(msg, sizeof(msg), "%s is back", kEnemyNames[k]);
+    logf("cheat: %s", msg);
+    postToast(msg);
+}
+
+// God mode: an enemy that gets close to the player is held still (its update does not run, its agent stops). It cannot attack,
+// and with no update there is no attack sound either. It moves on again when the player is out of range.
+const float kGodHold[kEnemyCount] = {3.5f, 3.5f, 4.0f, 3.0f, 3.0f, 2.5f, 2.5f};
+bool gGodHoldLogged[kEnemyCount] = {};
+
+bool godHolds(int k, Il2CppObject* o, EnemyState& s) {
+    float me[3], pl[3];
+    if (!valid(gPlayerCc) || !posOf(gPlayerCc, pl) || !posOf(o, me)) return false;
+    float dx = me[0] - pl[0], dy = me[1] - pl[1], dz = me[2] - pl[2];
+    float d = std::sqrt(dx * dx + dy * dy + dz * dz);
+    float range = kGodHold[k] + (s.godHold ? 0.6f : 0.f);  // a little more to let go than to catch: no flicker at the edge
+    if (d > range) return false;
+    if (!s.godHold) {
+        s.godHold = true;
+        if (!gGodHoldLogged[k]) {
+            gGodHoldLogged[k] = true;
+            logf("cheat: god mode: %s is held still near the player (%.1f m)", kEnemyNames[k], d);
+        }
+    }
+    if (gEO[k].agent) stopAgent(ref(o, gEO[k].agent), true);
+    return true;
 }
 
 // Returns false when the game's own update has to be skipped (the enemy is frozen).
@@ -528,11 +645,12 @@ bool enemyPre(int k, Il2CppObject* o) {
     const EnemyOff& e = gEO[k];
     const CheatSettings::Enemy& want = gC.enemy[k];
 
+    if (!s.haveHome && k < 2 && !s.dead && posOf(o, s.home)) s.haveHome = true;
     if (gKillPending[k]) {
         gKillPending[k] = false;
         killEnemy(k, o, s);
     }
-    if (s.dead) return true;
+    if (s.dead) return k >= 2;  // a dead Granny / Grandpa: their own update does not run (they are brought back in tick)
 
     // god mode: the enemy cannot start an attack. Granny and Grandpa attack when they come closer than DistanceJumpscare,
     // so that distance becomes 0 (put back when god mode ends); the "caught you" flag never stays up; the attic spider
@@ -553,6 +671,14 @@ bool enemyPre(int k, Il2CppObject* o) {
     if (gC.godMode) {
         if (e.caught) *P<bool>(o, e.caught) = false;
         if (k == 4 && e.target) *P<bool>(o, e.target) = false;
+    }
+
+    if (gC.godMode) {
+        if (godHolds(k, o, s)) return false;
+    }
+    if (s.godHold) {  // god mode ended or the player walked away
+        s.godHold = false;
+        if (e.agent) stopAgent(ref(o, e.agent), false);
     }
 
     // blind (the Little One is also blind while god mode is on: it has no other way to be told not to attack)
@@ -1081,7 +1207,7 @@ void install(HookInstaller hook) {
     };
 
     // player
-    H(cFps, "MobileFPS", "Update", 0, (void*)fpsHook, (void**)&gOrigFps);
+    if (H(cFps, "MobileFPS", "Update", 0, (void*)fpsHook, (void**)&gOrigFps)) gPlayerHook.store(true);
     Il2CppClass* cCc = findClass("UnityEngine", "CharacterController");
     H(cCc, "CharacterController", "Move", 1, (void*)hookMove, (void**)&gOrigMove);
     H(cFall, "FallingHolder", "Update", 0, (void*)fallHook<0>, (void**)&gOrigFall[0]);
@@ -1153,6 +1279,20 @@ void tick(const CheatSettings& s) {
 
     if (!gResolved) return;
     int64_t now = nowMs();
+
+    // Granny and Grandpa that were killed come back after the respawn time
+    if (s.respawnSec > 0.5f) {
+        for (int k = 0; k < 2; k++) {
+            for (auto& kv : gSt[k]) {
+                EnemyState& st = kv.second;
+                if (st.dead && st.deadAt && now - st.deadAt >= (int64_t)(s.respawnSec * 1000.f) && valid(kv.first)) {
+                    st.deadAt = 0;
+                    respawnEnemy(k, kv.first, st);
+                    break;  // one at a time: the map is not touched while it is walked
+                }
+            }
+        }
+    }
 
     // DoorRay / RayRemoveTraps: their ray length follows the long reach switch too
     if (s.longReachOn || !gReach.empty()) {

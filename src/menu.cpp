@@ -889,7 +889,7 @@ void cheatPlayer() {
     CheatSettings& c = fx.cheat;
     section("SURVIVAL");
     toggle("God mode", c.godMode, [](bool v) { fx.cheat.godMode = v; });
-    caption("Enemies cannot attack you.");
+    caption("Enemies cannot hurt you, and one that gets close is held still: it cannot attack and makes no attack sound. It moves on when you walk away.", 3);
     toggle("No fall damage", c.noFallDamage, [](bool v) { fx.cheat.noFallDamage = v; });
     toggle("No trap", c.noTrap, [](bool v) { fx.cheat.noTrap = v; });
     toggle("No cracking floor", c.noCrackFloor, [](bool v) { fx.cheat.noCrackFloor = v; });
@@ -931,6 +931,10 @@ void cheatEnemies() {
         caption(miss + " not available for " + name + ": the game has no such behaviour for it.", 2);
     }
     button(std::string(kEnemyKill[e]) + " " + name, [e] { fx.cheat.killReq[e]++; });
+    if (e < 2) {
+        slider("Respawn after", c.respawnSec, 0.f, 60.f, 1.f, "0", [](float v) { fx.cheat.respawnSec = v; });
+        caption(name + " goes down and gets up again where it started after this many seconds (0: it stays down).", 2);
+    }
     if (e == 2) caption("Mom Spider cannot die: this stuns her, like the game's own weapons.", 2);
     if (e == 6) caption("The Little One cannot die: this knocks it out, like the game's own weapons.", 2);
 }
@@ -1010,7 +1014,7 @@ void pageTas() {
             toggle("Show the splits panel", t.splitsShow, [](bool v) { fx.tas.splitsShow = v; });
             toggle("Auto list items", t.autoList, [](bool v) { fx.tas.autoList = v; });
             toggle("Escape split", t.escapeSplit, [](bool v) { fx.tas.escapeSplit = v; });
-            caption("Auto list: the list starts empty at every restart and fills up as you pick items up. Without it, the list shows every item you chose in the filter below, with -- until you pick it up. Escape is always the last row.", 4);
+            caption("Auto list: the list starts empty at every restart and fills up as you pick items up (if the filter below has nothing switched on, every item is listed; otherwise only the ones you switched on). Without it, the list shows every item you chose in the filter below, with -- until you pick it up. Escape is always the last row.", 5);
             button("Reset splits and start the timer", [] { fx.tas.resetSplitsReq++; });
             section("PANEL");
             slider("Panel scale", t.splitsScale, 0.6f, 2.f, 0.05f, "0.00", [](float v) { fx.tas.splitsScale = v; });

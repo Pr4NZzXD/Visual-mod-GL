@@ -81,6 +81,7 @@ struct CheatSettings {
     };
     Enemy enemy[kEnemyCount];
     int killReq[kEnemyCount] = {};
+    float respawnSec = 10.f;      // Granny and Grandpa come back this many seconds after they were killed (0 = they stay dead)
 
     // ---- items
     int spawnItem = 0;            // index into kItemNames
@@ -285,6 +286,8 @@ extern std::atomic<int> gGameState;
 // The game side asks the menu to switch the speedhack: 1 = on, 2 = off (the menu owns the settings, so it does it).
 extern std::atomic<int> gTasSpeedReq;
 extern std::atomic<int64_t> gPlayerSeenMs;
+// true once the hook of the player's update is installed: from then on "no player update seen yet" means "not playing" (main menu)
+extern std::atomic<bool> gPlayerHook;
 
 // settings file
 void settingsLoad(UiSettings& ui, FxSettings& fx);

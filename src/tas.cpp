@@ -106,7 +106,8 @@ bool gTsApplied = false;
 float gTsOrig = 1.f;
 
 // A fast-forward makes the game run many physics steps per frame, which is what makes it lag. So while it lasts the length of
-// a physics step grows with the speed (the number of steps per frame stays the same) and is put back afterwards.
+// a physics step grows (by a third of the speed factor: fewer steps, but not so coarse that things fall through the floor) and is
+// put back afterwards.
 bool gFixedApplied = false;
 float gFixedOrig = 0.02f;
 void fixedStepTick(bool ff, float speed) {
@@ -117,7 +118,7 @@ void fixedStepTick(bool ff, float speed) {
             if (gFixedOrig < 0.001f || gFixedOrig > 0.1f) return;  // not a value to trust
             gFixedApplied = true;
         }
-        float want = gFixedOrig * clampf(speed, 1.f, 12.f);
+        float want = gFixedOrig * clampf(speed / 3.f, 1.f, 4.f);  // a third of the factor: fewer steps, none too coarse
         if (std::fabs(u.fxGet() - want) > 0.0001f) u.fxSet(want);
     } else if (gFixedApplied) {
         u.fxSet(gFixedOrig);
@@ -379,6 +380,17 @@ std::string pretty(std::string n) {
 
 bool isOn(const std::string& name) { return gOff.find(name) == gOff.end(); }
 
+// Does an item go into the list? In the fixed list the filter decides. With "auto list" every item that is picked up goes in,
+// and the filter can only take some away: if it has NOTHING switched on (all off) it is not a choice but an empty filter, and
+// it must not hide everything (that is what made the auto list look dead).
+bool listed(const std::string& name) {
+    if (!S.autoList) return isOn(name);
+    if (gItems.empty()) return true;
+    for (const std::string& n : gItems)
+        if (isOn(n)) return isOn(name);  // something is switched on: the filter is a real choice
+    return true;
+}
+
 void addItem(const std::string& name) {
     if (std::find(gItems.begin(), gItems.end(), name) == gItems.end()) {
         gItems.push_back(name);
@@ -448,7 +460,7 @@ void syncRoute() {
     if (S.autoList) {
         std::vector<Split> keep;
         for (const Split& s : gRoute)
-            if (s.t >= 0.0 && isOn(s.name)) keep.push_back(s);
+            if (s.t >= 0.0 && listed(s.name)) keep.push_back(s);
         gRoute.swap(keep);
     } else {
         std::vector<Split> now;
@@ -484,7 +496,12 @@ void handlePicks(double now) {
     for (const std::string& raw : picks) {
         std::string name = pretty(raw);
         addItem(name);  // the filter page knows every item that was ever seen
-        if (gTimerStopped || !isOn(name)) continue;
+        if (gTimerStopped) continue;
+        if (!listed(name)) {
+            static int ignored = 0;
+            if (ignored++ < 6) logf("tas: %s is picked up but switched off in the split filter", name.c_str());
+            continue;
+        }
         double t = gTimerAccum;
         bool found = false;
         for (Split& s : gRoute) {
@@ -577,8 +594,9 @@ void publishSplits(double now, bool force) {
 //                       goes up. So "the day picture is up" = the object is active and its alpha is above 0.05.
 //   Days.PlayerBedAnim  the Animation of the bed cutscene. isPlaying is true while it plays.
 //   Days.BlackScreen    the black fade (only logged)
-//   Days.BeganDay       only used when it turns on
-// And, as the safety net: the player is running (the intro is certainly over). Every change is written to the log
+//   Days.BeganDay       turns on about 2-5 s after the scene changed, at the START of the day, while the screen is still black: it is
+//                       only logged (using it as the end of the cutscene started the timer far too early)
+// The end of the wait: the day picture shows up, or (in this order) the bed animation ended, or as the safety net the player is running (the intro is certainly over). Every change is written to the log
 // ("tas: level start +12.3s: ..."), so a game that behaves differently shows there.
 struct Intro {
     bool resolved = false;
@@ -765,14 +783,16 @@ void introTick(double now) {
     }
     Sig g = readSignals();
 
-    // Fast-forward only while the bed animation plays (the cutscene itself): not the loading, not the black screen, not the
-    // game. A short window that is renewed every moment the animation is playing; and a cap in total.
-    bool wantFf = S.skipBed && g.bed && !g.anyText && gIntroFfSpent < 25.0;
+    // Skip the bed cutscene: the game is played fast for the whole wait, from the scene change until the day picture shows up (or the
+    // player is running). That is the loading, the black screen and the bed cutscene together: whichever part the game spends its
+    // time in, it is over sooner. (Following the bed animation's own "is playing" flag alone did not work: it was not what the
+    // game waits for.) It ends the moment the wait ends, and there is a cap in total.
+    bool wantFf = S.skipBed && !g.anyText && gIntroFfSpent < 40.0;
     if (wantFf) {
         if (!gIntroFf) {
             gIntroFf = true;
             gFfSpeed = 10.f;
-            logf("tas: level start +%.1fs: the bed animation is playing: skipping it (x10)", el);
+            logf("tas: level start +%.1fs: skipping the cutscene (x10) until the day picture shows up", el);
         }
         gFfUntil = now + 0.5;
         gIntroFfSpent += dt;
@@ -790,13 +810,11 @@ void introTick(double now) {
         logf("tas: level start +%.1fs: day picture %d (alpha %.2f), bed animation %d, black screen %d, BeganDay %d", el, g.anyText, g.alpha, g.bed, g.black, g.began);
     if (g.bed) gSawBed = true;
     if (pBed && !g.bed && gSawBed && gBedEndAt < 0.0) gBedEndAt = now;  // the bed animation just ended
-    bool beganRise = g.began && !pBegan;
     memcpy(pText, g.text, sizeof(pText));
     pBegan = g.began;
     pBed = g.bed;
     pBlack = g.black;
     if (textRise) endIntro(now, "the day picture showed up");
-    else if (beganRise) endIntro(now, "BeganDay turned on");
     else if (inControl) endIntro(now, "the player is running");  // the safety net: the intro is certainly over
     else if (gBedEndAt >= 0.0 && now - gBedEndAt > 2.5) endIntro(now, "the bed animation ended");  // the picture normally comes first
     else if (el > 120.0) endIntro(now, "no sign of the end of the cutscene");
@@ -809,7 +827,9 @@ void gameStateTick(double now) {
     int64_t abs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
     int64_t seen = gPlayerSeenMs.load();
     bool haveSignal = seen != 0;
-    bool player = haveSignal ? (abs - seen < 700) : true;  // without the signal everything is shown, as before
+    // Before the first update of the player this session, "not seen yet" means the main menu (not playing). Only when the hook that
+    // makes the signal could not be installed, everything is shown, as before.
+    bool player = haveSignal ? (abs - seen < 700) : !gPlayerHook.load();
     float ts = u.tsGet ? u.tsGet() : 1.f;
     gPlayerHere = haveSignal && player;
     bool paused = player && ts < 0.0001f;
