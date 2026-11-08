@@ -50,7 +50,8 @@ Nothing in the Cheat tab uses a fixed address. Classes, fields and methods are f
 - Audio sync: every sound follows the speed
 - Item splits: a small panel that lists each item with the time you picked it up. The list starts again at every restart and fills up as you pick items up, or it can show only the items you chose in a filter. Escape is always the last row. You can change its size and opacity, and drag it where you want it
 - Restart button, also as a small round button on the screen (one tap, no menu needed)
-- Skip the bed and ending cutscenes (they play very fast, they are not cut out)
+- Skip the bed and ending cutscenes (they play very fast, they are not cut out). The bed skip runs from the moment the level loads until the player is ready, at the same speed as the developer's mod WakeUpFast
+- Restart when you die (the level starts again the moment `PlayerStatus.Killed` is true, like the developer's mod RestartOnDeath) and a fast death scene
 - Crosshair with 6 looks, its own size and opacity
 
 **Settings**: menu size, menu opacity and icon opacity (both down to 0%), icon size, accent and background colours, rainbow accent, rounded corners, lock the position
