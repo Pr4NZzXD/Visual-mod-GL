@@ -583,21 +583,18 @@ void publishSplits(double now, bool force) {
 }
 
 // ---------------------------------------------------------------- the start of a level
-// A level starts with a cutscene (you wake up in bed), then the picture "Day N" fades in, and only THEN does the player start
-// to run (MobileFPS.Update does not run before that: in the log the player shows up about 30 s after the scene changed, with
-// everything of the intro already behind it). So the intro has to be watched from the moment the scene changes, through the
-// Days object, which is there from the start. Until the day picture shows up: the timer is held at 0, the cutscene can be played
-// fast (Skip the bed cutscene, only while the bed animation is really playing), and the speedhack can be left off (Auto).
+// A level starts with a black screen (the day picture shows up over it), then the bed cutscene; the player only starts to run
+// (MobileFPS.Update) when it is ready, about 9 s after the scene changed. So the intro is watched from the moment the scene changes
+// (the Days object is there from the start) and it lasts until the player is ready, and nothing else: until then the timer is held
+// at 0, the cutscene is played fast (Skip the bed cutscene) and the speedhack stays off (Auto); at that moment the timer starts, the
+// fast-forward ends and Auto switches the speedhack on.
 //
-// What the game's own objects say (types read from the game's data):
-//   Days.Text_Day1..6   UI Images: the picture "Day N". They are never switched on or off, they FADE: the alpha of the colour
-//                       goes up. So "the day picture is up" = the object is active and its alpha is above 0.05.
-//   Days.PlayerBedAnim  the Animation of the bed cutscene. isPlaying is true while it plays.
-//   Days.BlackScreen    the black fade (only logged)
-//   Days.BeganDay       turns on about 2-5 s after the scene changed, at the START of the day, while the screen is still black: it is
-//                       only logged (using it as the end of the cutscene started the timer far too early)
-// The end of the wait: the day picture shows up, or (in this order) the bed animation ended, or as the safety net the player is running (the intro is certainly over). Every change is written to the log
-// ("tas: level start +12.3s: ..."), so a game that behaves differently shows there.
+// What the game's own objects say (types read from the game's data) is only LOGGED now ("tas: level start +3.4s: ..."), so a game
+// that behaves differently shows there:
+//   Days.Text_Day1..6   UI Images that fade (alpha), up over the black screen already
+//   Days.PlayerBedAnim  the Animation of the bed cutscene (isPlaying)
+//   Days.BlackScreen    the black fade
+//   Days.BeganDay       turns on about 2-5 s after the scene changed, at the START of the day
 struct Intro {
     bool resolved = false;
     Il2CppClass* cDays = nullptr;
@@ -753,11 +750,6 @@ void introTick(double now) {
             dropIntroObjects();
             return;
         }
-        if (g.anyText) {  // the day picture is already up: nothing to wait for
-            logf("tas: level start: the day picture is already up (alpha %.2f), the timer runs from the start", g.alpha);
-            dropIntroObjects();
-            return;
-        }
         gIntroWait = true;
         gTimerAccum = 0.0;
         memcpy(pText, g.text, sizeof(pText));
@@ -769,7 +761,7 @@ void introTick(double now) {
         logf("tas: level start +%.1fs: the Days object is there, the timer waits (bed animation %d, black screen %d, BeganDay %d)", now - gIntroSceneAt,
              g.bed, g.black, g.began);
         if (S.autoSpeed) gTasSpeedReq.store(2);
-        return;
+        // no return: the wait starts doing its work (the skip) in this same moment
     }
 
     if (!gIntroWait) return;
@@ -783,16 +775,15 @@ void introTick(double now) {
     }
     Sig g = readSignals();
 
-    // Skip the bed cutscene: the game is played fast for the whole wait, from the scene change until the day picture shows up (or the
-    // player is running). That is the loading, the black screen and the bed cutscene together: whichever part the game spends its
-    // time in, it is over sooner. (Following the bed animation's own "is playing" flag alone did not work: it was not what the
-    // game waits for.) It ends the moment the wait ends, and there is a cap in total.
-    bool wantFf = S.skipBed && !g.anyText && gIntroFfSpent < 40.0;
+    // Skip the bed cutscene: the game is played fast for the whole wait, from the scene change until the player is ready. That is the
+    // loading, the black screen with the day picture and the bed cutscene together: whichever part the game spends its time in, it
+    // is over sooner. It ends the moment the player is ready, and there is a cap in total.
+    bool wantFf = S.skipBed && gIntroFfSpent < 40.0;
     if (wantFf) {
         if (!gIntroFf) {
             gIntroFf = true;
             gFfSpeed = 10.f;
-            logf("tas: level start +%.1fs: skipping the cutscene (x10) until the day picture shows up", el);
+            logf("tas: level start +%.1fs: skipping the cutscene (x10) until the player is ready", el);
         }
         gFfUntil = now + 0.5;
         gIntroFfSpent += dt;
@@ -801,23 +792,19 @@ void introTick(double now) {
     }
 
     bool changed = g.began != pBegan || g.bed != pBed || g.black != pBlack;
-    bool textRise = false;
-    for (int i = 0; i < 7; i++) {
+    for (int i = 0; i < 7; i++)
         if (g.text[i] != pText[i]) changed = true;
-        if (g.text[i] && !pText[i]) textRise = true;
-    }
     if (changed && gIntroLogs++ < 40)
         logf("tas: level start +%.1fs: day picture %d (alpha %.2f), bed animation %d, black screen %d, BeganDay %d", el, g.anyText, g.alpha, g.bed, g.black, g.began);
-    if (g.bed) gSawBed = true;
-    if (pBed && !g.bed && gSawBed && gBedEndAt < 0.0) gBedEndAt = now;  // the bed animation just ended
     memcpy(pText, g.text, sizeof(pText));
     pBegan = g.began;
     pBed = g.bed;
     pBlack = g.black;
-    if (textRise) endIntro(now, "the day picture showed up");
-    else if (inControl) endIntro(now, "the player is running");  // the safety net: the intro is certainly over
-    else if (gBedEndAt >= 0.0 && now - gBedEndAt > 2.5) endIntro(now, "the bed animation ended");  // the picture normally comes first
-    else if (el > 120.0) endIntro(now, "no sign of the end of the cutscene");
+    // The end of the wait is ONE thing: the player is ready (its update runs). The day picture, the bed animation and BeganDay are
+    // only logged: the picture is up in the middle of the cutscene (over the black screen), so ending the wait there started the
+    // timer, stopped the skip and switched the speedhack on while the cutscene was still going.
+    if (inControl) endIntro(now, "the player is ready");
+    else if (el > 120.0) endIntro(now, "no sign of the player");
 }
 
 // ---------------------------------------------------------------- is the game being played?
