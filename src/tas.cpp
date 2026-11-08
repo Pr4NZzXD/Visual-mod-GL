@@ -323,6 +323,9 @@ double gTimerAccum = 0.0;   // seconds of play: counts only while the game is pl
 bool gTimerStopped = false; // the run is over (escaped)
 double gLastClock = 0.0;
 bool gPlaying = false;
+// the speed of "wake up fast" and "fast death": the same 100 as the game developer's own mods WakeUpFast / RestartOnDeath use. A frame cannot skip
+// more than Unity's maximum delta time, so this is "as fast as the game lets it go"; the physics step grows meanwhile (fixedStepTick).
+constexpr float kWakeSpeed = 100.f;
 bool gIntroWait = false;  // the cutscene at the start of a level is on: the timer is held (see "the start of a level")
 std::vector<std::string> gPicks;              // names the hook saw, handled in tick
 int gEscapeEvents = 0;
@@ -782,8 +785,8 @@ void introTick(double now) {
     if (wantFf) {
         if (!gIntroFf) {
             gIntroFf = true;
-            gFfSpeed = 10.f;
-            logf("tas: level start +%.1fs: skipping the cutscene (x10) until the player is ready", el);
+            gFfSpeed = kWakeSpeed;
+            logf("tas: level start +%.1fs: skipping the cutscene (x%.0f) until the player is ready", el, kWakeSpeed);
         }
         gFfUntil = now + 0.5;
         gIntroFfSpent += dt;
@@ -805,6 +808,81 @@ void introTick(double now) {
     // timer, stopped the skip and switched the speedhack on while the cutscene was still going.
     if (inControl) endIntro(now, "the player is ready");
     else if (el > 120.0) endIntro(now, "no sign of the player");
+}
+
+// ---------------------------------------------------------------- death: the two mods RestartOnDeath and WakeUpFast, built in
+// RestartOnDeath (decoded from the developer's DLL): in the level scene, as soon as PlayerStatus.Killed is true, the scene is loaded
+// again. WakeUpFast does the same test and then plays the game at 100x (the death scene passes at once); it also plays the start of
+// the level at 100x, which is "Skip the bed cutscene" here.
+struct Death {
+    bool resolved = false;
+    Il2CppClass* cPs = nullptr;
+    size_t killed = 0;
+} DT;
+Il2CppObject* gPsObj = nullptr;
+uint32_t gPsH = 0;
+double gPsFind = 0.0, gRestartedAt = -100.0;
+bool gDeathFf = false;
+
+void resolveDeath() {
+    if (DT.resolved) return;
+    DT.resolved = true;
+    DT.cPs = findClass("", "PlayerStatus");
+    if (DT.cPs) DT.killed = fieldChecked(DT.cPs, "PlayerStatus", "Killed", kTypeBool);
+    logf("tas: death: PlayerStatus.Killed %s", DT.killed ? "ok" : "MISSING");
+}
+
+void stopDeathFf() {
+    if (gDeathFf) {
+        gFfUntil = 0.0;
+        gDeathFf = false;
+    }
+}
+
+void dropPsObject() {
+    if (gPsH) release(gPsH);
+    gPsObj = nullptr;
+    gPsH = 0;
+}
+
+void deathTick(double now) {
+    if (!S.restartOnDeath && !S.fastDeath) {
+        stopDeathFf();
+        if (gPsObj) dropPsObject();
+        return;
+    }
+    resolveDeath();
+    if (!DT.killed) return;
+    if (!gPsObj || !alive(gPsObj)) {
+        dropPsObject();
+        stopDeathFf();  // the level is gone (restarted, or back in the menu)
+        if (now < gPsFind) return;
+        gPsFind = now + 0.5;
+        Il2CppObject* a = findObjectsOfType(DT.cPs);
+        if (a && A.array_length(a) > 0 && arrayData(a)[0] && alive(arrayData(a)[0])) {
+            gPsObj = arrayData(a)[0];
+            gPsH = retain(gPsObj);
+        }
+        if (!gPsObj) return;
+    }
+    if (!*fieldPtr<bool>(gPsObj, DT.killed)) {
+        stopDeathFf();
+        return;
+    }
+    // the player is dead
+    if (S.fastDeath) {
+        if (!gDeathFf) {
+            gDeathFf = true;
+            logf("tas: you died: playing the death scene fast (x%.0f)", kWakeSpeed);
+        }
+        gFfSpeed = kWakeSpeed;
+        gFfUntil = now + 0.5;
+    }
+    if (S.restartOnDeath && now - gRestartedAt > 2.0) {
+        gRestartedAt = now;
+        logf("tas: you died: the level starts again");
+        restartScene();
+    }
 }
 
 // ---------------------------------------------------------------- is the game being played?
@@ -1019,6 +1097,7 @@ void tick(const TasSettings& s) {
     }
     gameStateTick(now);
     introTick(now);
+    deathTick(now);
     handleFilterChanges();
     discoverItems(now);
     syncRoute();

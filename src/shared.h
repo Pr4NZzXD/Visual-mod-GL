@@ -109,6 +109,8 @@ struct TasSettings {
     int restartReq = 0;
     bool restartBtn = false;                            // a small restart button on the screen
     float restartBtnSize = 1.f;                         // 0.6 .. 2
+    bool restartOnDeath = false;                        // the level starts again the moment you die (the mod "RestartOnDeath", built in)
+    bool fastDeath = false;                             // the death scene is played fast (the second half of the mod "WakeUpFast")
     bool skipBed = false;                               // the cutscene at the start of a level (you wake up in bed) and the one when Granny or Grandpa catches you in bed
     bool skipEnding = false;                            // the cutscene after an escape
     // ---- crosshair

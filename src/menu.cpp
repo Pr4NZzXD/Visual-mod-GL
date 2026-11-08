@@ -1044,7 +1044,11 @@ void pageTas() {
             section("CUTSCENES");
             toggle("Skip the bed cutscene", t.skipBed, [](bool v) { fx.tas.skipBed = v; });
             toggle("Skip the ending cutscene", t.skipEnding, [](bool v) { fx.tas.skipEnding = v; });
-            caption("Bed: the wake-up cutscene at the start of a level and the one when you are caught in bed. The cutscene is not cut out: it plays at 10x until the text Day 1 shows, then the game goes on as usual. The ending plays at 10x. If it does not work, open Menu settings > Show last log lines: the lines that start with tas: say what happened.", 3);
+            section("DEATH");
+            toggle("Restart when you die", t.restartOnDeath, [](bool v) { fx.tas.restartOnDeath = v; });
+            toggle("Fast death scene", t.fastDeath, [](bool v) { fx.tas.fastDeath = v; });
+            caption("Restart when you die: the level starts again the moment you are dead, no waiting for the death scene or the game over screen. Fast death scene: the death scene is played as fast as the game allows.", 3);
+            caption("Bed: the wake-up cutscene at the start of a level and the one when you are caught in bed. The cutscene is not cut out: from the moment the level loads until the player is ready it is played as fast as the game allows, then everything goes on as usual. The ending plays at 10x. If it does not work, open Menu settings > Show last log lines: the lines that start with tas: say what happened.", 3);
             break;
         }
         default: {  // ---- crosshair

@@ -340,6 +340,8 @@ void fields(UiSettings& ui, FxSettings& fx, std::vector<Field>& out) {
         FF("tasSplitScale", t.splitsScale, 0.6f, 2.f);
         FF("tasSplitAlpha", t.splitsAlpha, 0.f, 1.f);
         FB("tasSkipBed", t.skipBed);
+        FB("tasRestartDeath", t.restartOnDeath);
+        FB("tasFastDeath", t.fastDeath);
         FB("tasSkipEnd", t.skipEnding);
         FB("tasRestartBtn", t.restartBtn);
         FF("tasRestartSize", t.restartBtnSize, 0.6f, 2.f);
